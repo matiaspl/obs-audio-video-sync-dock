@@ -9,7 +9,7 @@ import os
 import shutil
 import subprocess
 from PIL import Image, ImageDraw, ImageFont
-import qrcode
+from qrutil import make_qr_image
 
 
 def _div_ceil(n, m):
@@ -194,8 +194,7 @@ class Pattern:
         ctx = self.ctx
         f, c = self.f, self.c
         q_ms = self.q * 1000 * ctx.vr[1] // ctx.vr[0]
-        qr_img = qrcode.make(f'q={q_ms},i={i},f={f},c={c},t={ctx.type_flags},I={self.index_max}',
-                             error_correction=qrcode.constants.ERROR_CORRECT_M).get_image()
+        qr_img = make_qr_image(f'q={q_ms},i={i},f={f},c={c},t={ctx.type_flags},I={self.index_max}')
         size = min(ctx.width, ctx.height)
         qr_img = qr_img.resize((size, size))
         base_img = Image.new('RGB', (ctx.width, ctx.height), (127, 127, 127))

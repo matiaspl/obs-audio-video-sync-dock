@@ -6,6 +6,42 @@ This is an OBS Studio plugin to measure latency between audio and video.
 
 ## How to use
 
+### AV offset clip workflow
+
+Use this workflow when you want to measure the relative offset between audio and
+video after playing a test clip through an external device and recording it back
+with a camera and microphone.
+
+1. Generate a low-flash AV offset clip:
+
+   ```sh
+   (cd tool && ./avoffsetgen.py --vr 30 --ar 48000 -o /tmp/av-offset-pattern.mp4)
+   ```
+
+2. Play the generated clip on the device under test.
+3. Capture the device with the camera and microphone that OBS will use.
+4. Open the Audio Video Sync dock, select `AV Offset Clip`, and start measuring.
+
+The v2 clip uses sparse checkerboard events for video timing and far-field
+acoustic packets for audio timing and identity. The exact audio event is the
+center of the packet's short tick inside the centered matched-filter marker.
+DTMF uses the standard 4x3 keypad frequencies, an 8-bit event code, CRC8, and
+60 ms symbol guards for identity. The measurement is relative AV offset only;
+it does not claim true source-to-capture transmission latency.
+
+To verify the reference file itself without OBS media-source scheduling in the
+path, run:
+
+```sh
+(cd tool && ./verify_avoffset_file.py ../release/av-offset-pattern-media-source.mov)
+```
+
+When validating OBS behavior, compare the dock result against an actual OBS
+recording made with the same source sync offsets, encoder, frame rate, and audio
+buffering settings.
+
+### Legacy workflow
+
 1. Play the video.
    Choose the appropriate video file for your player and OBS Studio configuration.
 

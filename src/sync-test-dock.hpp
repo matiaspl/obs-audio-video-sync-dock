@@ -2,6 +2,8 @@
 #include <QFrame>
 #include <QPushButton>
 #include <QLabel>
+#include <QComboBox>
+#include <deque>
 #include <obs.hpp>
 #include "sync-test-output.hpp"
 
@@ -14,9 +16,12 @@ public:
 
 private:
 	QPushButton *startButton = nullptr;
+	QComboBox *modeSelector = nullptr;
 
+	QLabel *latencyLabel = nullptr;
 	QLabel *latencyDisplay = nullptr;
 	QLabel *latencyPolarity = nullptr;
+	QLabel *glassToGlassDisplay = nullptr;
 	QLabel *indexDisplay = nullptr;
 	QLabel *frequencyDisplay = nullptr;
 	QLabel *videoIndexDisplay = nullptr;
@@ -35,6 +40,7 @@ private:
 	int received_video_index_max = 0;
 	int received_audio_index_max = 0;
 	int audio_index_max = 0;
+	std::deque<int64_t> av_offset_samples;
 
 private:
 	void on_start_stop();

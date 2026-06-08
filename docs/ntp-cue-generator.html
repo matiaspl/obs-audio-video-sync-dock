@@ -1,0 +1,1959 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="theme-color" content="#101317">
+	<link rel="icon" href="data:,">
+	<title>NTP Cue Generator</title>
+	<style>
+		:root {
+			color-scheme: dark;
+			--bg: #101317;
+			--panel: #191d23;
+			--panel2: #20262d;
+			--text: #edf2f5;
+			--muted: #93a0aa;
+			--line: #323a44;
+			--green: #35d18a;
+			--blue: #5fb7ff;
+			--amber: #f0b85c;
+			--red: #ff6868;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		html,
+		body {
+			height: 100%;
+			margin: 0;
+			background: var(--bg);
+			color: var(--text);
+			font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			letter-spacing: 0;
+			overflow: hidden;
+		}
+
+		body {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 360px;
+		}
+
+		.stage {
+			position: relative;
+			min-width: 0;
+			background: #14181d;
+		}
+
+		canvas {
+			width: 100%;
+			height: 100%;
+			display: block;
+			touch-action: none;
+		}
+
+		.overlay {
+			position: absolute;
+			left: 16px;
+			right: 16px;
+			bottom: 16px;
+			display: grid;
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+			gap: 8px;
+			pointer-events: none;
+		}
+
+		.badge {
+			background: rgb(10 13 16 / 0.72);
+			border: 1px solid rgb(255 255 255 / 0.12);
+			border-radius: 8px;
+			padding: 8px 10px;
+			min-width: 0;
+		}
+
+		.badge div:first-child,
+		.field label {
+			color: var(--muted);
+			font-size: 11px;
+			line-height: 1.2;
+			text-transform: uppercase;
+		}
+
+		.badge div:last-child {
+			color: var(--text);
+			font-size: 18px;
+			line-height: 1.25;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.panel {
+			min-width: 0;
+			background: var(--panel);
+			border-left: 1px solid var(--line);
+			padding: 16px;
+			overflow: auto;
+		}
+
+		h1 {
+			font-size: 18px;
+			line-height: 1.2;
+			margin: 0 0 16px;
+			font-weight: 700;
+		}
+
+		.group {
+			border-top: 1px solid var(--line);
+			padding-top: 14px;
+			margin-top: 14px;
+			display: grid;
+			gap: 10px;
+		}
+
+		.row {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 8px;
+		}
+
+		.field {
+			display: grid;
+			gap: 5px;
+			min-width: 0;
+		}
+
+		input,
+		select,
+		button {
+			font: inherit;
+		}
+
+		input,
+		select {
+			width: 100%;
+			color: var(--text);
+			background: var(--panel2);
+			border: 1px solid var(--line);
+			border-radius: 6px;
+			padding: 8px 9px;
+			min-height: 38px;
+		}
+
+		input[type="checkbox"] {
+			width: 18px;
+			min-height: 18px;
+			accent-color: var(--green);
+		}
+
+		button {
+			min-height: 40px;
+			border: 1px solid var(--line);
+			border-radius: 6px;
+			color: var(--text);
+			background: var(--panel2);
+			padding: 8px 10px;
+			cursor: pointer;
+			-webkit-touch-callout: none;
+			-webkit-user-select: none;
+			user-select: none;
+		}
+
+		button.primary {
+			color: #07110d;
+			background: var(--green);
+			border-color: var(--green);
+			font-weight: 700;
+		}
+
+		button:disabled {
+			opacity: 0.52;
+			cursor: default;
+		}
+
+		.toggle {
+			display: grid;
+			grid-template-columns: 20px 1fr;
+			align-items: center;
+			gap: 8px;
+			color: var(--text);
+			font-size: 14px;
+		}
+
+		.status {
+			display: grid;
+			gap: 7px;
+			font-size: 13px;
+			color: var(--muted);
+		}
+
+		.status-line {
+			display: flex;
+			align-items: baseline;
+			justify-content: space-between;
+			gap: 10px;
+			border-bottom: 1px solid rgb(255 255 255 / 0.06);
+			padding-bottom: 6px;
+		}
+
+		.status-line span:last-child {
+			color: var(--text);
+			text-align: right;
+			font-variant-numeric: tabular-nums;
+		}
+
+		.ok {
+			color: var(--green) !important;
+		}
+
+		.warn {
+			color: var(--amber) !important;
+		}
+
+		.bad {
+			color: var(--red) !important;
+		}
+
+		.log {
+			height: 168px;
+			overflow: auto;
+			border: 1px solid var(--line);
+			background: #11151a;
+			border-radius: 6px;
+			padding: 8px;
+			font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+			color: #c8d2da;
+			white-space: pre;
+		}
+
+		@media (max-width: 860px) {
+			body {
+				grid-template-columns: 1fr;
+				grid-template-rows: minmax(0, 1fr) auto;
+			}
+
+			.panel {
+				border-left: 0;
+				border-top: 1px solid var(--line);
+				max-height: 46vh;
+			}
+
+			.overlay {
+				display: none;
+			}
+		}
+
+		body.generator-running .overlay,
+		body.fullscreen-running .panel {
+			display: none;
+		}
+
+		body.fullscreen-running .overlay {
+			display: none;
+		}
+
+		body.fullscreen-running {
+			display: block;
+		}
+	</style>
+</head>
+<body>
+	<main class="stage">
+		<canvas id="stage"></canvas>
+		<div class="overlay">
+			<div class="badge"><div>Clock</div><div id="clockBadge">local</div></div>
+			<div class="badge"><div>Next Cue</div><div id="nextBadge">-</div></div>
+			<div class="badge"><div>Sequence</div><div id="seqBadge">-</div></div>
+			<div class="badge"><div>Wake</div><div id="wakeBadge">idle</div></div>
+		</div>
+	</main>
+
+	<aside class="panel">
+		<h1>NTP Cue Generator</h1>
+
+		<div class="row">
+			<button id="startBtn" class="primary">Start</button>
+			<button id="fullscreenBtn">Fullscreen</button>
+		</div>
+
+		<div class="group">
+			<div class="field">
+				<label for="timeEndpoint">Time endpoint</label>
+				<input id="timeEndpoint" value="time.php" placeholder="blank uses this device clock">
+			</div>
+			<div class="row">
+				<button id="syncBtn">Sync Clock</button>
+				<button id="lockBtn">Lock Screen</button>
+			</div>
+			<label class="toggle"><input id="autoSync" type="checkbox" checked> Auto sync while running</label>
+		</div>
+
+		<div class="group">
+			<div class="row">
+				<div class="field">
+					<label for="periodMs">Period ms</label>
+					<input id="periodMs" type="number" min="1000" step="100" value="3000">
+				</div>
+				<div class="field">
+					<label for="leadMs">Schedule lead ms</label>
+					<input id="leadMs" type="number" min="500" step="100" value="2200">
+				</div>
+			</div>
+			<div class="row">
+				<div class="field">
+					<label for="visualMs">Visual cue ms</label>
+					<input id="visualMs" type="number" min="80" step="10" value="220">
+				</div>
+				<div class="field">
+					<label for="gain">Audio gain</label>
+					<input id="gain" type="number" min="0" max="1" step="0.05" value="0.35">
+				</div>
+			</div>
+			<label class="toggle"><input id="audioEnabled" type="checkbox" checked> Audio cues</label>
+			<button id="testAudioBtn">Test Audio</button>
+			<button id="testMediaBtn">Test Media Audio</button>
+			<label class="toggle"><input id="showData" type="checkbox" checked> Timestamp blocks</label>
+		</div>
+
+		<div class="group status">
+			<div class="status-line"><span>Clock source</span><span id="clockSource">local</span></div>
+			<div class="status-line"><span>Offset</span><span id="clockOffset">0.000 ms</span></div>
+			<div class="status-line"><span>RTT</span><span id="clockRtt">-</span></div>
+			<div class="status-line"><span>Audio latency</span><span id="audioLatency">-</span></div>
+			<div class="status-line"><span>Audio timing</span><span id="audioTiming">-</span></div>
+			<div class="status-line"><span>Audio state</span><span id="audioState">-</span></div>
+			<div class="status-line"><span>Scheduler</span><span id="schedulerStatus">stopped</span></div>
+			<div class="status-line"><span>Screen lock</span><span id="wakeStatus">idle</span></div>
+		</div>
+
+		<div class="group">
+			<div class="log" id="eventLog"></div>
+		</div>
+	</aside>
+
+	<script>
+	(() => {
+		"use strict";
+
+		const DTMF_ROWS = [697, 770, 852, 941];
+		const DTMF_COLS = [1209, 1336, 1477];
+		const MARKER_MS = 80;
+		const MARKER_F0 = 500;
+		const MARKER_F1 = 2500;
+		const MARKER_TICK_MS = 6;
+		const MARKER_CHIRP_GAIN = 0.72;
+		const MARKER_TICK_GAIN = 0.28;
+		const SYMBOL_MS = 70;
+		const GUARD_MS = 60;
+		const PAYLOAD_SYMBOLS = 5;
+		const PAYLOAD_BASE = DTMF_ROWS.length * DTMF_COLS.length;
+		const LOOKAHEAD_MS = 3200;
+		const SCHEDULER_TICK_MS = 60;
+		const QR_VERSION = 3;
+		const QR_SIZE = 17 + QR_VERSION * 4;
+		const QR_DATA_CODEWORDS = 44;
+		const QR_ECC_CODEWORDS = 26;
+		const QR_DISPLAY_LEAD_MS = 700;
+
+		const el = {
+			canvas: document.getElementById("stage"),
+			startBtn: document.getElementById("startBtn"),
+			fullscreenBtn: document.getElementById("fullscreenBtn"),
+			lockBtn: document.getElementById("lockBtn"),
+			syncBtn: document.getElementById("syncBtn"),
+			testAudioBtn: document.getElementById("testAudioBtn"),
+			testMediaBtn: document.getElementById("testMediaBtn"),
+			timeEndpoint: document.getElementById("timeEndpoint"),
+			autoSync: document.getElementById("autoSync"),
+			periodMs: document.getElementById("periodMs"),
+			leadMs: document.getElementById("leadMs"),
+			visualMs: document.getElementById("visualMs"),
+			gain: document.getElementById("gain"),
+			audioEnabled: document.getElementById("audioEnabled"),
+			showData: document.getElementById("showData"),
+			clockBadge: document.getElementById("clockBadge"),
+			nextBadge: document.getElementById("nextBadge"),
+			seqBadge: document.getElementById("seqBadge"),
+			wakeBadge: document.getElementById("wakeBadge"),
+			clockSource: document.getElementById("clockSource"),
+			clockOffset: document.getElementById("clockOffset"),
+			clockRtt: document.getElementById("clockRtt"),
+			audioLatency: document.getElementById("audioLatency"),
+			audioTiming: document.getElementById("audioTiming"),
+			audioState: document.getElementById("audioState"),
+			schedulerStatus: document.getElementById("schedulerStatus"),
+			wakeStatus: document.getElementById("wakeStatus"),
+			eventLog: document.getElementById("eventLog"),
+		};
+
+		const state = {
+			running: false,
+			starting: false,
+			runToken: 0,
+			audioContext: null,
+			masterGain: null,
+			wakeLock: null,
+			keepAliveCanvas: null,
+			keepAliveVideo: null,
+			keepAliveStream: null,
+			schedulerTimer: 0,
+			syncTimer: 0,
+			nextTargetMs: 0,
+			lastScheduledTargetMs: 0,
+			scheduled: new Map(),
+			activeAudioNodes: new Set(),
+			testMediaElement: null,
+			mediaHoldElement: null,
+			audioHoldSource: null,
+			audioPrimedAfterCue: false,
+			recentEvents: [],
+			offsetMs: 0,
+			offsetSamples: [],
+			qrCache: new Map(),
+			clockLabel: "local",
+			lastRttMs: 0,
+			lastFrameMs: 0,
+			audioTimingLabel: "-",
+			lastAudioSchedule: "-",
+		};
+
+		function localEpochMs() {
+			return performance.timeOrigin + performance.now();
+		}
+
+		function remoteNowMs() {
+			return localEpochMs() + state.offsetMs;
+		}
+
+		function remoteMsToPerfMs(remoteMs) {
+			return remoteMs - performance.timeOrigin - state.offsetMs;
+		}
+
+		function fmtMs(ms, digits = 3) {
+			if (!Number.isFinite(ms))
+				return "-";
+			return `${ms.toFixed(digits)} ms`;
+		}
+
+		function fmtTime(epochMs) {
+			if (!Number.isFinite(epochMs))
+				return "-";
+			const d = new Date(epochMs);
+			const base = d.toISOString().replace("T", " ").replace("Z", "");
+			return base;
+		}
+
+		function readNumber(input, fallback) {
+			const value = Number(input.value);
+			return Number.isFinite(value) ? value : fallback;
+		}
+
+		function crc8(value) {
+			let crc = value & 0xff;
+			for (let bit = 0; bit < 8; bit++) {
+				if (crc & 0x80)
+					crc = ((crc << 1) ^ 0x07) & 0xff;
+				else
+					crc = (crc << 1) & 0xff;
+			}
+			return crc;
+		}
+
+		function sequenceForTarget(targetMs) {
+			return Math.floor(targetMs / Math.max(1, readNumber(el.periodMs, 3000))) >>> 0;
+		}
+
+		function nextBoundary(nowMs, leadMs, periodMs) {
+			return Math.ceil((nowMs + leadMs) / periodMs) * periodMs;
+		}
+
+		function parseServerTime(text, response) {
+			const headerDate = response.headers.get("date");
+			const contentType = response.headers.get("content-type") || "";
+
+			if (contentType.includes("application/json") && text) {
+				try {
+					const data = JSON.parse(text);
+					const receiveMs = Number(data.server_receive_ms);
+					const sendMs = Number(data.server_send_ms);
+					if (Number.isFinite(receiveMs) && Number.isFinite(sendMs) && receiveMs > 1000000000000 &&
+					    sendMs > 1000000000000) {
+						return { serverMs: (receiveMs + sendMs) * 0.5, precision: "json-ntp" };
+					}
+					const candidates = [
+						data.server_midpoint_ms,
+						data.unix_ms,
+						data.unixMillis,
+						data.unixMilliseconds,
+						data.epoch_ms,
+						data.epochMillis,
+						data.now_ms,
+						data.nowMillis,
+						data.time_ms,
+						data.timestamp_ms,
+					];
+					for (const candidate of candidates) {
+						const value = Number(candidate);
+						if (Number.isFinite(value) && value > 1000000000000)
+							return { serverMs: value, precision: "json-ms" };
+					}
+					const secondsCandidates = [data.unixtime, data.unix, data.epoch, data.timestamp];
+					for (const candidate of secondsCandidates) {
+						const value = Number(candidate);
+						if (Number.isFinite(value) && value > 1000000000)
+							return { serverMs: value * 1000, precision: "json-s" };
+					}
+					for (const key of ["datetime", "utc_datetime", "iso", "time"]) {
+						if (typeof data[key] === "string") {
+							const parsed = Date.parse(data[key]);
+							if (Number.isFinite(parsed))
+								return { serverMs: parsed, precision: "json-iso" };
+						}
+					}
+				}
+				catch {
+					/* Fall back to text/header parsing. */
+				}
+			}
+
+			if (text) {
+				const trimmed = text.trim();
+				const number = Number(trimmed);
+				if (Number.isFinite(number)) {
+					if (number > 1000000000000)
+						return { serverMs: number, precision: "text-ms" };
+					if (number > 1000000000)
+						return { serverMs: number * 1000, precision: "text-s" };
+				}
+				const parsed = Date.parse(trimmed);
+				if (Number.isFinite(parsed))
+					return { serverMs: parsed, precision: "text-date" };
+			}
+
+			if (headerDate) {
+				const parsed = Date.parse(headerDate);
+				if (Number.isFinite(parsed))
+					return { serverMs: parsed, precision: "date-header" };
+			}
+
+			return null;
+		}
+
+		async function syncClock() {
+			const endpoint = el.timeEndpoint.value.trim();
+			if (!endpoint) {
+				state.offsetMs = 0;
+				state.offsetSamples = [];
+				state.clockLabel = "local";
+				state.lastRttMs = 0;
+				updateStatus();
+				return;
+			}
+
+			const t0 = localEpochMs();
+			const response = await fetch(endpoint, { cache: "no-store" });
+			const contentType = response.headers.get("content-type") || "";
+			let text = "";
+			if (contentType.includes("json") || contentType.includes("text"))
+				text = await response.text();
+			const t1 = localEpochMs();
+			const parsed = parseServerTime(text, response);
+			if (!parsed)
+				throw new Error("No parseable server time");
+
+			const rttMs = t1 - t0;
+			const midpoint = (t0 + t1) * 0.5;
+			const offsetMs = parsed.serverMs - midpoint;
+			state.offsetSamples.push({ offsetMs, rttMs, precision: parsed.precision });
+			state.offsetSamples.sort((a, b) => a.rttMs - b.rttMs);
+			state.offsetSamples = state.offsetSamples.slice(0, 9);
+
+			const best = state.offsetSamples.slice(0, Math.min(5, state.offsetSamples.length));
+			const offsets = best.map((sample) => sample.offsetMs).sort((a, b) => a - b);
+			state.offsetMs = offsets[Math.floor(offsets.length / 2)];
+			state.lastRttMs = best[0].rttMs;
+			state.clockLabel = parsed.precision === "date-header" ? "http date" : "http time";
+			updateStatus();
+		}
+
+		function log(line) {
+			const stamp = new Date().toISOString().slice(11, 23);
+			el.eventLog.textContent = `${stamp} ${line}\n${el.eventLog.textContent}`.slice(0, 9000);
+		}
+
+		async function requestWakeLock() {
+			if (!("wakeLock" in navigator)) {
+				state.wakeLock = null;
+				return requestMediaKeepAlive();
+			}
+
+			try {
+				state.wakeLock = await navigator.wakeLock.request("screen");
+				state.wakeLock.addEventListener("release", () => {
+					state.wakeLock = null;
+					if (state.running && document.visibilityState === "visible")
+						requestWakeLock();
+					else
+						updateStatus();
+				});
+				updateStatus();
+				return true;
+			}
+			catch (error) {
+				state.wakeLock = null;
+				const fallbackWorked = await requestMediaKeepAlive();
+				if (!fallbackWorked) {
+					el.wakeStatus.textContent = error.name || "failed";
+					el.wakeStatus.className = "bad";
+					el.wakeBadge.textContent = "failed";
+				}
+				return fallbackWorked;
+			}
+		}
+
+		async function enterFullscreen() {
+			const target = document.documentElement;
+			if (!document.fullscreenElement && target.requestFullscreen)
+				await target.requestFullscreen({ navigationUI: "hide" });
+			updateFullscreenClass();
+		}
+
+		async function requestMediaKeepAlive() {
+			if (!state.keepAliveVideo) {
+				const canvas = document.createElement("canvas");
+				canvas.width = 2;
+				canvas.height = 2;
+				const ctx = canvas.getContext("2d");
+				ctx.fillStyle = "#000";
+				ctx.fillRect(0, 0, 2, 2);
+
+				const stream = canvas.captureStream ? canvas.captureStream(1) : null;
+				if (!stream) {
+					el.wakeStatus.textContent = "unsupported";
+					el.wakeStatus.className = "warn";
+					el.wakeBadge.textContent = "unsupported";
+					return false;
+				}
+
+				const video = document.createElement("video");
+				video.muted = true;
+				video.loop = true;
+				video.playsInline = true;
+				video.setAttribute("playsinline", "");
+				video.style.position = "fixed";
+				video.style.width = "1px";
+				video.style.height = "1px";
+				video.style.opacity = "0";
+				video.style.pointerEvents = "none";
+				video.srcObject = stream;
+				document.body.appendChild(video);
+				state.keepAliveCanvas = canvas;
+				state.keepAliveVideo = video;
+				state.keepAliveStream = stream;
+			}
+
+			try {
+				await state.keepAliveVideo.play();
+				updateStatus();
+				return true;
+			}
+			catch (error) {
+				el.wakeStatus.textContent = error.name || "failed";
+				el.wakeStatus.className = "bad";
+				el.wakeBadge.textContent = "failed";
+				return false;
+			}
+		}
+
+		function releaseKeepAwake() {
+			if (state.wakeLock) {
+				const lock = state.wakeLock;
+				state.wakeLock = null;
+				lock.release().catch(() => {});
+			}
+			if (state.keepAliveVideo)
+				state.keepAliveVideo.pause();
+			updateStatus();
+		}
+
+		function msToSamples(sampleRate, ms) {
+			return Math.round(sampleRate * ms / 1000);
+		}
+
+		function markerReference(sampleRate) {
+			const count = msToSamples(sampleRate, MARKER_MS);
+			const center = Math.floor(count / 2);
+			const firstCount = Math.max(1, center);
+			const secondCount = Math.max(1, count - center);
+			const firstDuration = firstCount / sampleRate;
+			const secondDuration = secondCount / sampleRate;
+			const upSlope = (MARKER_F1 - MARKER_F0) / firstDuration;
+			const downSlope = (MARKER_F1 - MARKER_F0) / secondDuration;
+			const phaseCenter = 2 * Math.PI * (
+				MARKER_F0 * firstDuration + 0.5 * upSlope * firstDuration * firstDuration
+			);
+			const tickSigma = (MARKER_TICK_MS / 1000) / 6;
+			const tickRadius = MARKER_TICK_MS / 2000;
+			const reference = new Float32Array(count);
+			let peak = 0;
+
+			for (let i = 0; i < count; i++) {
+				let phase;
+				if (i < center) {
+					const t = i / sampleRate;
+					phase = 2 * Math.PI * (MARKER_F0 * t + 0.5 * upSlope * t * t);
+				} else {
+					const t = (i - center) / sampleRate;
+					phase = phaseCenter + 2 * Math.PI * (MARKER_F1 * t - 0.5 * downSlope * t * t);
+				}
+
+				const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / Math.max(1, count - 1));
+				const chirp = Math.sin(phase) * window;
+				const centerTime = (i - center) / sampleRate;
+				let tick = 0;
+				if (Math.abs(centerTime) <= tickRadius) {
+					const x = centerTime / tickSigma;
+					tick = (1 - x * x) * Math.exp(-0.5 * x * x);
+				}
+
+				const sample = MARKER_CHIRP_GAIN * chirp + MARKER_TICK_GAIN * tick;
+				reference[i] = sample;
+				peak = Math.max(peak, Math.abs(sample));
+			}
+
+			if (peak > 0) {
+				for (let i = 0; i < reference.length; i++)
+					reference[i] /= peak;
+			}
+
+			return reference;
+		}
+
+		function makePacketBuffer(sequence) {
+			const audio = state.audioContext;
+			const sampleRate = audio.sampleRate;
+			const marker = markerReference(sampleRate);
+			const markerSamples = marker.length;
+			const guardSamples = msToSamples(sampleRate, GUARD_MS);
+			const symbolSamples = msToSamples(sampleRate, SYMBOL_MS);
+			const symbolStride = symbolSamples + guardSamples;
+			const packetSamples = markerSamples + guardSamples + PAYLOAD_SYMBOLS * symbolStride;
+			const buffer = audio.createBuffer(2, packetSamples, sampleRate);
+			const left = buffer.getChannelData(0);
+			const right = buffer.getChannelData(1);
+
+			for (let i = 0; i < markerSamples; i++) {
+				left[i] += marker[i];
+				right[i] += marker[i];
+			}
+
+			let payload = ((sequence & 0xff) << 8) | crc8(sequence & 0xff);
+			const digits = new Array(PAYLOAD_SYMBOLS).fill(0);
+			for (let i = PAYLOAD_SYMBOLS - 1; i >= 0; i--) {
+				digits[i] = payload % PAYLOAD_BASE;
+				payload = Math.floor(payload / PAYLOAD_BASE);
+			}
+
+			const payloadStart = markerSamples + guardSamples;
+			for (let symbol = 0; symbol < PAYLOAD_SYMBOLS; symbol++) {
+				const digit = digits[symbol];
+				const row = DTMF_ROWS[Math.floor(digit / DTMF_COLS.length)];
+				const col = DTMF_COLS[digit % DTMF_COLS.length];
+				const start = payloadStart + symbol * symbolStride;
+				for (let i = 0; i < symbolSamples; i++) {
+					const t = i / sampleRate;
+					const ramp = Math.min(
+						1,
+						i / Math.max(1, guardSamples),
+						(symbolSamples - i - 1) / Math.max(1, guardSamples)
+					);
+					const sample = 0.5 * (Math.sin(2 * Math.PI * row * t) + Math.sin(2 * Math.PI * col * t)) * ramp;
+					left[start + i] += sample;
+					right[start + i] += sample;
+				}
+			}
+
+			return buffer;
+		}
+
+		function audioOutputLatencySeconds() {
+			const audio = state.audioContext;
+			if (!audio)
+				return 0;
+			return (audio.baseLatency || 0) + (audio.outputLatency || 0);
+		}
+
+		function validOutputTimestamp(timestamp, audio) {
+			if (!timestamp || !Number.isFinite(timestamp.contextTime) || !Number.isFinite(timestamp.performanceTime))
+				return false;
+
+			const perfDeltaMs = timestamp.performanceTime - performance.now();
+			const contextDelta = timestamp.contextTime - audio.currentTime;
+			if (timestamp.performanceTime <= 0 && performance.now() > 100)
+				return false;
+			if (timestamp.contextTime <= 0 && audio.currentTime > 0.1)
+				return false;
+			if (Math.abs(perfDeltaMs) > 2000)
+				return false;
+			if (Math.abs(contextDelta) > 2)
+				return false;
+			return true;
+		}
+
+		function audioScheduleForRemoteMs(targetMs) {
+			const audio = state.audioContext;
+			if (!audio)
+				return { when: 0, mode: "none" };
+
+			const perfTarget = remoteMsToPerfMs(targetMs);
+			if (typeof audio.getOutputTimestamp === "function") {
+				const timestamp = audio.getOutputTimestamp();
+				if (validOutputTimestamp(timestamp, audio)) {
+					return {
+						when: timestamp.contextTime + (perfTarget - timestamp.performanceTime) / 1000,
+						mode: "output timestamp",
+					};
+				}
+			}
+
+			const latency = audioOutputLatencySeconds();
+			return {
+				when: audio.currentTime + (targetMs - remoteNowMs()) / 1000 - latency,
+				mode: latency > 0 ? "latency estimate" : "render clock",
+			};
+		}
+
+		function ensureAudioContext() {
+			if (!state.audioContext) {
+				const AudioCtor = window.AudioContext || window.webkitAudioContext;
+				if (!AudioCtor)
+					throw new Error("Web Audio is not available");
+				state.audioContext = new AudioCtor({ latencyHint: "interactive" });
+				state.masterGain = state.audioContext.createGain();
+				state.masterGain.connect(state.audioContext.destination);
+			}
+			return state.audioContext;
+		}
+
+		function retainAudioNode(node) {
+			state.activeAudioNodes.add(node);
+			node.addEventListener("ended", () => {
+				state.activeAudioNodes.delete(node);
+			});
+		}
+
+		async function resumeAudioContext() {
+			const audio = ensureAudioContext();
+			state.lastAudioSchedule = "resume...";
+			updateStatus();
+			await audio.resume();
+			state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+			updateStatus();
+			return audio;
+		}
+
+		function playUnlockTone({ direct = false, duration = 0.35, frequency = 880, level = 0.24 } = {}) {
+			const audio = state.audioContext;
+			if (!audio || !state.masterGain)
+				return;
+
+			const osc = audio.createOscillator();
+			const gain = audio.createGain();
+			const now = audio.currentTime;
+			retainAudioNode(osc);
+			osc.frequency.value = frequency;
+			gain.gain.setValueAtTime(0.0001, now);
+			gain.gain.exponentialRampToValueAtTime(level, now + 0.02);
+			gain.gain.setValueAtTime(level, now + Math.max(0.03, duration - 0.08));
+			gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+			osc.connect(gain);
+			gain.connect(direct ? audio.destination : state.masterGain);
+			osc.start(now);
+			osc.stop(now + duration + 0.02);
+			log("audio unlock tone");
+		}
+
+		function playGraphPrimeBuffer({ duration = 3.4, primeMs = 260, frequency = 1000, level = 0.16, holdLevel = 0.002 } = {}) {
+			const audio = state.audioContext;
+			if (!audio || !state.masterGain)
+				return;
+
+			const sampleRate = audio.sampleRate;
+			const samples = Math.max(1, Math.round(sampleRate * duration));
+			const primeSamples = Math.max(1, Math.round(sampleRate * primeMs / 1000));
+			const buffer = audio.createBuffer(2, samples, sampleRate);
+			const left = buffer.getChannelData(0);
+			const right = buffer.getChannelData(1);
+			for (let i = 0; i < samples; i++) {
+				const t = i / sampleRate;
+				const fade = Math.min(1, i / 960, (samples - i - 1) / 960);
+				const segmentLevel = i < primeSamples ? level : holdLevel;
+				const sample = Math.sin(2 * Math.PI * frequency * t) * segmentLevel * fade;
+				left[i] = sample;
+				right[i] = sample;
+			}
+
+			const source = audio.createBufferSource();
+			source.buffer = buffer;
+			source.connect(state.masterGain);
+			retainAudioNode(source);
+			source.start(audio.currentTime + 0.005);
+			log("audio graph prime");
+		}
+
+		function startSilentAudioHold(label = "audio silent hold") {
+			const audio = state.audioContext;
+			if (!audio || !state.masterGain || state.audioHoldSource)
+				return;
+
+			const sampleRate = audio.sampleRate;
+			const durationSeconds = 0.5;
+			const samples = Math.max(1, Math.round(sampleRate * durationSeconds));
+			const buffer = audio.createBuffer(2, samples, sampleRate);
+			const left = buffer.getChannelData(0);
+			const right = buffer.getChannelData(1);
+			for (let i = 0; i < samples; i++) {
+				const t = i / sampleRate;
+				const carrier = Math.sin(2 * Math.PI * 191 * t) * 0.00008;
+				const dither = (((i * 48271) % 2147483647) / 2147483647 - 0.5) * 0.00004;
+				const sample = carrier + dither;
+				left[i] = sample;
+				right[i] = sample;
+			}
+
+			const source = audio.createBufferSource();
+			source.buffer = buffer;
+			source.loop = true;
+			source.connect(state.masterGain);
+			retainAudioNode(source);
+			state.audioHoldSource = source;
+			source.start(audio.currentTime);
+			log(label);
+		}
+
+		function stopSilentAudioHold() {
+			const source = state.audioHoldSource;
+			if (!source)
+				return;
+
+			state.audioHoldSource = null;
+			try {
+				source.stop();
+			}
+			catch {
+				/* The source may already be stopped. */
+			}
+			try {
+				source.disconnect();
+			}
+			catch {
+				/* The source may already be disconnected. */
+			}
+			log("audio silent hold ended");
+		}
+
+		function stopStartupAudioHold() {
+			stopSilentAudioHold();
+			stopSilentMediaHold();
+		}
+
+		async function testAudio() {
+			const audio = ensureAudioContext();
+			playUnlockTone({ direct: true, duration: 0.9, frequency: 880, level: 0.45 });
+			await audio.resume();
+			playGraphPrimeBuffer({ duration: 0.9, primeMs: 900, frequency: 1000, level: 0.2, holdLevel: 0.2 });
+			state.audioTimingLabel = "manual test";
+			state.lastAudioSchedule = `web audio test ${audio.state}`;
+			updateStatus();
+		}
+
+		function mediaToneUrl() {
+			if (mediaToneUrl.cached)
+				return mediaToneUrl.cached;
+
+			const sampleRate = 48000;
+			const durationSeconds = 1.0;
+			const samples = Math.round(sampleRate * durationSeconds);
+			const dataBytes = samples * 2;
+			const buffer = new ArrayBuffer(44 + dataBytes);
+			const view = new DataView(buffer);
+			let offset = 0;
+			function str(value) {
+				for (let i = 0; i < value.length; i++)
+					view.setUint8(offset++, value.charCodeAt(i));
+			}
+			function u32(value) {
+				view.setUint32(offset, value, true);
+				offset += 4;
+			}
+			function u16(value) {
+				view.setUint16(offset, value, true);
+				offset += 2;
+			}
+
+			str("RIFF");
+			u32(36 + dataBytes);
+			str("WAVEfmt ");
+			u32(16);
+			u16(1);
+			u16(1);
+			u32(sampleRate);
+			u32(sampleRate * 2);
+			u16(2);
+			u16(16);
+			str("data");
+			u32(dataBytes);
+			for (let i = 0; i < samples; i++) {
+				const t = i / sampleRate;
+				const fade = Math.min(1, i / 960, (samples - i - 1) / 960);
+				const sample = Math.max(-1, Math.min(1, Math.sin(2 * Math.PI * 660 * t) * 0.6 * fade));
+				view.setInt16(offset, Math.round(sample * 32767), true);
+				offset += 2;
+			}
+
+			let binary = "";
+			const bytes = new Uint8Array(buffer);
+			for (let i = 0; i < bytes.length; i++)
+				binary += String.fromCharCode(bytes[i]);
+			mediaToneUrl.cached = `data:audio/wav;base64,${btoa(binary)}`;
+			return mediaToneUrl.cached;
+		}
+
+		function silentMediaHoldUrl() {
+			if (silentMediaHoldUrl.cached)
+				return silentMediaHoldUrl.cached;
+
+			const sampleRate = 48000;
+			const durationSeconds = 1.0;
+			const samples = Math.round(sampleRate * durationSeconds);
+			const dataBytes = samples * 2;
+			const buffer = new ArrayBuffer(44 + dataBytes);
+			const view = new DataView(buffer);
+			let offset = 0;
+			function str(value) {
+				for (let i = 0; i < value.length; i++)
+					view.setUint8(offset++, value.charCodeAt(i));
+			}
+			function u32(value) {
+				view.setUint32(offset, value, true);
+				offset += 4;
+			}
+			function u16(value) {
+				view.setUint16(offset, value, true);
+				offset += 2;
+			}
+
+			str("RIFF");
+			u32(36 + dataBytes);
+			str("WAVEfmt ");
+			u32(16);
+			u16(1);
+			u16(1);
+			u32(sampleRate);
+			u32(sampleRate * 2);
+			u16(2);
+			u16(16);
+			str("data");
+			u32(dataBytes);
+			for (let i = 0; i < samples; i++) {
+				const t = i / sampleRate;
+				const carrier = Math.sin(2 * Math.PI * 173 * t) * 0.00008;
+				const dither = (((i * 16807) % 2147483647) / 2147483647 - 0.5) * 0.00004;
+				const sample = Math.max(-1, Math.min(1, carrier + dither));
+				view.setInt16(offset, Math.round(sample * 32767), true);
+				offset += 2;
+			}
+
+			let binary = "";
+			const bytes = new Uint8Array(buffer);
+			for (let i = 0; i < bytes.length; i++)
+				binary += String.fromCharCode(bytes[i]);
+			silentMediaHoldUrl.cached = `data:audio/wav;base64,${btoa(binary)}`;
+			return silentMediaHoldUrl.cached;
+		}
+
+		function ensureMediaElement() {
+			if (!state.testMediaElement) {
+				const audio = document.createElement("audio");
+				audio.preload = "auto";
+				audio.playsInline = true;
+				audio.src = mediaToneUrl();
+				audio.style.display = "none";
+				document.body.appendChild(audio);
+				state.testMediaElement = audio;
+			}
+
+			return state.testMediaElement;
+		}
+
+		function ensureMediaHoldElement() {
+			if (!state.mediaHoldElement) {
+				const audio = document.createElement("audio");
+				audio.preload = "auto";
+				audio.playsInline = true;
+				audio.loop = true;
+				audio.src = silentMediaHoldUrl();
+				audio.style.display = "none";
+				document.body.appendChild(audio);
+				state.mediaHoldElement = audio;
+			}
+
+			return state.mediaHoldElement;
+		}
+
+		function beginMediaUnlockTone(label = "media element test") {
+			const audio = ensureMediaElement();
+			audio.pause();
+			audio.currentTime = 0;
+			const playPromise = audio.play();
+			state.lastAudioSchedule = label;
+			log(label);
+			updateStatus();
+			return playPromise;
+		}
+
+		function keepMediaUnlockToneActive(label = "media unlock active") {
+			const audio = ensureMediaElement();
+			if (!audio.paused && !audio.ended) {
+				state.lastAudioSchedule = label;
+				log(label);
+				updateStatus();
+				return Promise.resolve();
+			}
+
+			audio.currentTime = 0;
+			const playPromise = audio.play();
+			state.lastAudioSchedule = label;
+			log(label);
+			updateStatus();
+			return playPromise;
+		}
+
+		function beginSilentMediaHold(label = "media silent hold") {
+			const audio = ensureMediaHoldElement();
+			if (audio.paused || audio.ended) {
+				audio.currentTime = 0;
+				const playPromise = audio.play();
+				state.lastAudioSchedule = label;
+				log(label);
+				updateStatus();
+				return playPromise;
+			}
+
+			state.lastAudioSchedule = label;
+			log(label);
+			updateStatus();
+			return Promise.resolve();
+		}
+
+		function stopSilentMediaHold() {
+			if (!state.mediaHoldElement)
+				return;
+			if (state.mediaHoldElement.paused && state.mediaHoldElement.currentTime === 0)
+				return;
+
+			state.mediaHoldElement.pause();
+			state.mediaHoldElement.currentTime = 0;
+			log("media silent hold ended");
+		}
+
+		async function testMediaAudio() {
+			await beginMediaUnlockTone("media audio test");
+			state.audioTimingLabel = "media test";
+			updateStatus();
+		}
+
+		function runStart() {
+			start().catch((error) => {
+				log(`start failed: ${error.message}`);
+				state.runToken++;
+				state.starting = false;
+				state.running = false;
+				window.clearInterval(state.schedulerTimer);
+				window.clearInterval(state.syncTimer);
+				state.schedulerTimer = 0;
+				state.syncTimer = 0;
+				stopStartupAudioHold();
+				state.lastAudioSchedule = error.message || "start failed";
+				el.startBtn.textContent = "Start";
+				el.startBtn.classList.add("primary");
+				updateStatus();
+				updateRunClass();
+				updateFullscreenClass();
+			});
+		}
+
+		function runTestAudio() {
+			testAudio().catch((error) => {
+				log(`audio test failed: ${error.message}`);
+				state.lastAudioSchedule = error.message || "test failed";
+				updateStatus();
+			});
+		}
+
+		function runTestMediaAudio() {
+			testMediaAudio().catch((error) => {
+				log(`media audio test failed: ${error.message}`);
+				state.lastAudioSchedule = error.message || "media test failed";
+				updateStatus();
+			});
+		}
+
+		function primeScheduledAudioOutput() {
+			state.lastAudioSchedule = "silent hold until first cue";
+			log("silent hold until first cue");
+			updateStatus();
+		}
+
+		async function primeStartupAudioOutput() {
+			if (!el.audioEnabled.checked) {
+				state.lastAudioSchedule = "audio disabled";
+				updateStatus();
+				return null;
+			}
+
+			let mediaUnlock = Promise.resolve();
+			try {
+				mediaUnlock = beginSilentMediaHold();
+			}
+			catch (error) {
+				log(`media silent hold failed: ${error.message}`);
+			}
+			mediaUnlock.catch((error) => {
+				log(`media silent hold failed: ${error.message}`);
+				updateStatus();
+			});
+
+			const audio = ensureAudioContext();
+			state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+			startSilentAudioHold();
+			state.lastAudioSchedule = "silent hold";
+			updateStatus();
+			await audio.resume();
+			return audio;
+		}
+
+		function scheduleAudioCue(targetMs, sequence) {
+			if (!el.audioEnabled.checked || !state.audioContext)
+				return false;
+
+			const schedule = audioScheduleForRemoteMs(targetMs - MARKER_MS * 0.5);
+			const when = schedule.when;
+			if (when < state.audioContext.currentTime + 0.025)
+				return false;
+
+			const source = state.audioContext.createBufferSource();
+			const releaseStartupHold = !state.audioPrimedAfterCue;
+			source.buffer = makePacketBuffer(sequence);
+			source.connect(state.masterGain);
+			retainAudioNode(source);
+			source.addEventListener("ended", () => {
+				state.lastAudioSchedule = `ended seq=${sequence & 0xff}`;
+				if (releaseStartupHold)
+					stopStartupAudioHold();
+				updateStatus();
+			});
+			source.start(when);
+			state.audioTimingLabel = schedule.mode;
+			state.lastAudioSchedule = `${schedule.mode} seq=${sequence & 0xff} in=${((when - state.audioContext.currentTime) * 1000).toFixed(1)} ms`;
+			log(`audio ${state.lastAudioSchedule}`);
+			return true;
+		}
+
+		function scheduleDueEvents() {
+			if (!state.running)
+				return;
+
+			const now = remoteNowMs();
+			const period = Math.max(1000, readNumber(el.periodMs, 3000));
+			const lead = Math.max(500, readNumber(el.leadMs, 2200));
+			if (!state.nextTargetMs || state.nextTargetMs < now - period)
+				state.nextTargetMs = nextBoundary(now, lead, period);
+
+			let scheduledAudio = false;
+			while (state.nextTargetMs <= now + LOOKAHEAD_MS) {
+				if (!state.scheduled.has(state.nextTargetMs)) {
+					const sequence = sequenceForTarget(state.nextTargetMs);
+					state.scheduled.set(state.nextTargetMs, { targetMs: state.nextTargetMs, sequence });
+					scheduledAudio = scheduleAudioCue(state.nextTargetMs, sequence) || scheduledAudio;
+					log(`cue seq=${sequence & 0xff} target=${fmtTime(state.nextTargetMs)} utc_ms=${Math.round(state.nextTargetMs)}`);
+				}
+				state.lastScheduledTargetMs = state.nextTargetMs;
+				state.nextTargetMs += period;
+			}
+
+			if (scheduledAudio && !state.audioPrimedAfterCue) {
+				state.audioPrimedAfterCue = true;
+				primeScheduledAudioOutput();
+			}
+
+			for (const key of [...state.scheduled.keys()]) {
+				if (key < now - 5000)
+					state.scheduled.delete(key);
+			}
+			updateStatus();
+		}
+
+		function gfTables() {
+			if (gfTables.cache)
+				return gfTables.cache;
+
+			const exp = new Array(512);
+			const log = new Array(256);
+			let x = 1;
+			for (let i = 0; i < 255; i++) {
+				exp[i] = x;
+				log[x] = i;
+				x <<= 1;
+				if (x & 0x100)
+					x ^= 0x11d;
+			}
+			for (let i = 255; i < 512; i++)
+				exp[i] = exp[i - 255];
+			gfTables.cache = { exp, log };
+			return gfTables.cache;
+		}
+
+		function gfMul(a, b) {
+			if (!a || !b)
+				return 0;
+			const { exp, log } = gfTables();
+			return exp[log[a] + log[b]];
+		}
+
+		function rsGenerator(degree) {
+			let poly = [1];
+			for (let root = 0; root < degree; root++) {
+				const next = new Array(poly.length + 1).fill(0);
+				const alpha = gfTables().exp[root];
+				for (let i = 0; i < poly.length; i++) {
+					next[i] ^= poly[i];
+					next[i + 1] ^= gfMul(poly[i], alpha);
+				}
+				poly = next;
+			}
+			return poly;
+		}
+
+		function rsRemainder(dataCodewords, degree) {
+			const generator = rsGenerator(degree);
+			const result = new Array(degree).fill(0);
+			for (const value of dataCodewords) {
+				const factor = value ^ result.shift();
+				result.push(0);
+				for (let i = 0; i < degree; i++)
+					result[i] ^= gfMul(generator[i + 1], factor);
+			}
+			return result;
+		}
+
+		function appendBits(bits, value, count) {
+			for (let i = count - 1; i >= 0; i--)
+				bits.push(((value >>> i) & 1) !== 0);
+		}
+
+		function qrPayload(targetMs, sequence) {
+			const phaseMs = Math.max(1, Math.round(Math.max(80, readNumber(el.visualMs, 220)) * 0.5));
+			return `p=2,s=${Math.round(targetMs)},q=${phaseMs},i=${sequence & 0xff},m=1`;
+		}
+
+		function qrDataCodewords(payload) {
+			const bytes = [...new TextEncoder().encode(payload)];
+			const capacityBits = QR_DATA_CODEWORDS * 8;
+			const bits = [];
+			appendBits(bits, 0x4, 4);
+			appendBits(bits, bytes.length, 8);
+			for (const byte of bytes)
+				appendBits(bits, byte, 8);
+
+			if (bits.length > capacityBits)
+				throw new Error("QR payload too long");
+			const terminator = Math.min(4, capacityBits - bits.length);
+			appendBits(bits, 0, terminator);
+			while (bits.length % 8)
+				bits.push(false);
+
+			const codewords = [];
+			for (let i = 0; i < bits.length; i += 8) {
+				let value = 0;
+				for (let j = 0; j < 8; j++)
+					value = (value << 1) | (bits[i + j] ? 1 : 0);
+				codewords.push(value);
+			}
+			for (let pad = 0; codewords.length < QR_DATA_CODEWORDS; pad++)
+				codewords.push(pad % 2 ? 0x11 : 0xec);
+			return codewords;
+		}
+
+		function makeQrMatrix(payload) {
+			const cached = state.qrCache.get(payload);
+			if (cached)
+				return cached;
+
+			const dataCodewords = qrDataCodewords(payload);
+			const codewords = dataCodewords.concat(rsRemainder(dataCodewords, QR_ECC_CODEWORDS));
+			const size = QR_SIZE;
+			const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+			const reserved = Array.from({ length: size }, () => new Array(size).fill(false));
+
+			function setFunction(col, row, dark) {
+				if (row < 0 || row >= size || col < 0 || col >= size)
+					return;
+				modules[row][col] = dark;
+				reserved[row][col] = true;
+			}
+
+			function drawFinder(col, row) {
+				for (let y = -1; y <= 7; y++) {
+					for (let x = -1; x <= 7; x++) {
+						const xx = col + x;
+						const yy = row + y;
+						if (xx < 0 || xx >= size || yy < 0 || yy >= size)
+							continue;
+						const dist = Math.max(Math.abs(x - 3), Math.abs(y - 3));
+						setFunction(xx, yy, dist === 3 || dist <= 1);
+					}
+				}
+			}
+
+			function drawAlignment(col, row) {
+				for (let y = -2; y <= 2; y++) {
+					for (let x = -2; x <= 2; x++) {
+						const dist = Math.max(Math.abs(x), Math.abs(y));
+						setFunction(col + x, row + y, dist === 2 || dist === 0);
+					}
+				}
+			}
+
+			function formatBits(mask) {
+				let data = mask;
+				let rem = data << 10;
+				for (let bit = 14; bit >= 10; bit--) {
+					if ((rem >>> bit) & 1)
+						rem ^= 0x537 << (bit - 10);
+				}
+				return ((data << 10) | (rem & 0x3ff)) ^ 0x5412;
+			}
+
+			function drawFormat(mask) {
+				const bits = formatBits(mask);
+				const bit = (i) => ((bits >>> i) & 1) !== 0;
+
+				for (let i = 0; i <= 5; i++)
+					setFunction(8, i, bit(i));
+				setFunction(8, 7, bit(6));
+				setFunction(8, 8, bit(7));
+				setFunction(7, 8, bit(8));
+				for (let i = 9; i < 15; i++)
+					setFunction(14 - i, 8, bit(i));
+
+				for (let i = 0; i < 8; i++)
+					setFunction(size - 1 - i, 8, bit(i));
+				for (let i = 8; i < 15; i++)
+					setFunction(8, size - 15 + i, bit(i));
+				setFunction(8, size - 8, true);
+			}
+
+			drawFinder(0, 0);
+			drawFinder(size - 7, 0);
+			drawFinder(0, size - 7);
+			drawAlignment(22, 22);
+			for (let i = 8; i < size - 8; i++) {
+				setFunction(i, 6, i % 2 === 0);
+				setFunction(6, i, i % 2 === 0);
+			}
+			drawFormat(0);
+
+			let bitIndex = 0;
+			let upward = true;
+			for (let right = size - 1; right >= 1; right -= 2) {
+				if (right === 6)
+					right--;
+				for (let vertical = 0; vertical < size; vertical++) {
+					const row = upward ? size - 1 - vertical : vertical;
+					for (let j = 0; j < 2; j++) {
+						const col = right - j;
+						if (reserved[row][col])
+							continue;
+						const codeword = codewords[Math.floor(bitIndex / 8)] || 0;
+						modules[row][col] = ((codeword >>> (7 - bitIndex % 8)) & 1) !== 0;
+						bitIndex++;
+					}
+				}
+				upward = !upward;
+			}
+
+			function maskBit(mask, row, col) {
+				switch (mask) {
+				case 0:
+					return (row + col) % 2 === 0;
+				case 1:
+					return row % 2 === 0;
+				case 2:
+					return col % 3 === 0;
+				case 3:
+					return (row + col) % 3 === 0;
+				case 4:
+					return (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0;
+				case 5:
+					return (row * col) % 2 + (row * col) % 3 === 0;
+				case 6:
+					return ((row * col) % 2 + (row * col) % 3) % 2 === 0;
+				default:
+					return ((row + col) % 2 + (row * col) % 3) % 2 === 0;
+				}
+			}
+
+			function withMask(mask) {
+				const copy = modules.map((row) => row.slice());
+				for (let row = 0; row < size; row++) {
+					for (let col = 0; col < size; col++) {
+						if (!reserved[row][col] && maskBit(mask, row, col))
+							copy[row][col] = !copy[row][col];
+					}
+				}
+				return copy;
+			}
+
+			function penalty(matrix) {
+				let score = 0;
+				function scoreLine(get) {
+					for (let major = 0; major < size; major++) {
+						let runColor = get(major, 0);
+						let runLength = 1;
+						for (let minor = 1; minor < size; minor++) {
+							const color = get(major, minor);
+							if (color === runColor) {
+								runLength++;
+								continue;
+							}
+							if (runLength >= 5)
+								score += 3 + runLength - 5;
+							runColor = color;
+							runLength = 1;
+						}
+						if (runLength >= 5)
+							score += 3 + runLength - 5;
+					}
+				}
+
+				scoreLine((row, col) => matrix[row][col]);
+				scoreLine((col, row) => matrix[row][col]);
+
+				for (let row = 0; row < size - 1; row++) {
+					for (let col = 0; col < size - 1; col++) {
+						const color = matrix[row][col];
+						if (matrix[row][col + 1] === color && matrix[row + 1][col] === color &&
+						    matrix[row + 1][col + 1] === color) {
+							score += 3;
+						}
+					}
+				}
+
+				const pattern = [true, false, true, true, true, false, true, false, false, false, false];
+				function hasPattern(get, major, minor) {
+					for (let i = 0; i < pattern.length; i++) {
+						if (get(major, minor + i) !== pattern[i])
+							return false;
+					}
+					return true;
+				}
+				for (let row = 0; row < size; row++) {
+					for (let col = 0; col <= size - pattern.length; col++) {
+						if (hasPattern((r, c) => matrix[r][c], row, col) ||
+						    hasPattern((r, c) => matrix[r][size - 1 - c], row, col)) {
+							score += 40;
+						}
+					}
+				}
+				for (let col = 0; col < size; col++) {
+					for (let row = 0; row <= size - pattern.length; row++) {
+						if (hasPattern((c, r) => matrix[r][c], col, row) ||
+						    hasPattern((c, r) => matrix[size - 1 - r][c], col, row)) {
+							score += 40;
+						}
+					}
+				}
+
+				let dark = 0;
+				for (let row = 0; row < size; row++) {
+					for (let col = 0; col < size; col++) {
+						if (matrix[row][col])
+							dark++;
+					}
+				}
+				const total = size * size;
+				score += Math.floor(Math.abs(dark * 20 - total * 10) / total) * 10;
+				return score;
+			}
+
+			let bestMask = 0;
+			let bestMatrix = withMask(0);
+			let bestPenalty = penalty(bestMatrix);
+			for (let mask = 1; mask < 8; mask++) {
+				const matrix = withMask(mask);
+				const p = penalty(matrix);
+				if (p < bestPenalty) {
+					bestMask = mask;
+					bestMatrix = matrix;
+					bestPenalty = p;
+				}
+			}
+
+			modules.splice(0, modules.length, ...bestMatrix);
+			drawFormat(bestMask);
+			state.qrCache.set(payload, modules);
+			if (state.qrCache.size > 256)
+				state.qrCache.delete(state.qrCache.keys().next().value);
+			return modules;
+		}
+
+		function drawQr(ctx, square, targetMs, sequence) {
+			const payload = qrPayload(targetMs, sequence);
+			const modules = makeQrMatrix(payload);
+			const quiet = 4;
+			const totalCells = modules.length + quiet * 2;
+			const cell = Math.max(1, Math.floor(square.size / totalCells));
+			const actual = cell * totalCells;
+			const x = Math.round(square.x + (square.size - actual) * 0.5);
+			const y = Math.round(square.y + (square.size - actual) * 0.5);
+
+			ctx.fillStyle = "#fff";
+			ctx.fillRect(x, y, actual, actual);
+			ctx.fillStyle = "#000";
+			for (let row = 0; row < modules.length; row++) {
+				for (let col = 0; col < modules.length; col++) {
+					if (modules[row][col])
+						ctx.fillRect(x + (col + quiet) * cell, y + (row + quiet) * cell, cell, cell);
+				}
+			}
+		}
+
+		function markerSquare(w, h) {
+			const size = Math.min(w, h) * 0.88;
+			return {
+				x: (w - size) * 0.5,
+				y: (h - size) * 0.5,
+				size,
+			};
+		}
+
+		function referencePoints(square) {
+			const centerX = square.x + square.size * 0.5;
+			const centerY = square.y + square.size * 0.5;
+			const corners = [
+				[square.x, square.y],
+				[square.x + square.size, square.y],
+				[square.x + square.size, square.y + square.size],
+				[square.x, square.y + square.size],
+			];
+			return corners.map(([x, y]) => [
+				(x * 15 + centerX * 9) / 24,
+				(y * 15 + centerY * 9) / 24,
+			]);
+		}
+
+		function drawMarkerPhase(ctx, square, phaseIndex, dpr) {
+			ctx.fillStyle = "#7f7f7f";
+			ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+			const radius = Math.max(18 * dpr, square.size * 0.085);
+			const points = referencePoints(square);
+			for (let i = 0; i < points.length; i++) {
+				const high = (i % 2) === phaseIndex;
+				ctx.beginPath();
+				ctx.arc(points[i][0], points[i][1], radius, 0, Math.PI * 2);
+				ctx.fillStyle = high ? "#f2f2f2" : "#202020";
+				ctx.fill();
+			}
+		}
+
+		function nearestEvent(now) {
+			let best = null;
+			let bestAbs = Infinity;
+			for (const event of state.scheduled.values()) {
+				const delta = event.targetMs - now;
+				const abs = Math.abs(delta);
+				if (abs < bestAbs) {
+					best = event;
+					bestAbs = abs;
+				}
+			}
+			return best;
+		}
+
+		function drawStage() {
+			const canvas = el.canvas;
+			const ctx = canvas.getContext("2d");
+			const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+			const rect = canvas.getBoundingClientRect();
+			const w = Math.max(1, Math.round(rect.width * dpr));
+			const h = Math.max(1, Math.round(rect.height * dpr));
+			if (canvas.width !== w || canvas.height !== h) {
+				canvas.width = w;
+				canvas.height = h;
+			}
+
+			const now = remoteNowMs();
+			state.lastFrameMs = now;
+			const period = Math.max(1000, readNumber(el.periodMs, 3000));
+			const visualMs = Math.max(80, readNumber(el.visualMs, 220));
+			const event = nearestEvent(now);
+			const delta = event ? now - event.targetMs : Infinity;
+			const phaseMs = visualMs * 0.5;
+			const active = Math.abs(delta) <= phaseMs;
+			const qrVisible = el.showData.checked && event && delta < -phaseMs && delta >= -QR_DISPLAY_LEAD_MS;
+
+			ctx.fillStyle = "#171c21";
+			ctx.fillRect(0, 0, w, h);
+
+			const centerX = w * 0.5;
+			const centerY = h * 0.5;
+			const next = event || { targetMs: nextBoundary(now, readNumber(el.leadMs, 2200), period), sequence: 0 };
+			const square = markerSquare(w, h);
+
+			if (active) {
+				drawMarkerPhase(ctx, square, delta < 0 ? 0 : 1, dpr);
+			}
+			else if (qrVisible) {
+				ctx.fillStyle = "#7f7f7f";
+				ctx.fillRect(0, 0, w, h);
+				drawQr(ctx, square, event.targetMs, event.sequence);
+			}
+			else {
+				ctx.strokeStyle = "#2d3841";
+				ctx.lineWidth = Math.max(2, 3 * dpr);
+				ctx.beginPath();
+				ctx.moveTo(centerX, h * 0.14);
+				ctx.lineTo(centerX, h * 0.86);
+				ctx.stroke();
+
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				ctx.fillStyle = "#edf2f5";
+				ctx.font = `${Math.max(28, Math.min(w, h) * 0.058)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+				ctx.fillText("ARMED", centerX, centerY - h * 0.065);
+
+				ctx.font = `${Math.max(14, Math.min(w, h) * 0.026)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+				ctx.fillStyle = "#93a0aa";
+				ctx.fillText(`SEQ ${(next.sequence & 0xff).toString().padStart(3, "0")}  UTC ${Math.round(next.targetMs)}`, centerX, centerY + h * 0.02);
+				ctx.fillText(fmtTime(next.targetMs), centerX, centerY + h * 0.07);
+			}
+
+			if (!active && !qrVisible) {
+				const progress = ((now % period) + period) % period / period;
+				ctx.fillStyle = "#2a333c";
+				ctx.fillRect(w * 0.08, h - 18 * dpr, w * 0.84, 5 * dpr);
+				ctx.fillStyle = "#5fb7ff";
+				ctx.fillRect(w * 0.08, h - 18 * dpr, w * 0.84 * progress, 5 * dpr);
+			}
+
+			updateBadges(next, now);
+			requestAnimationFrame(drawStage);
+		}
+
+		function updateBadges(next, now) {
+			el.clockBadge.textContent = state.clockLabel;
+			el.nextBadge.textContent = next && Number.isFinite(next.targetMs) ? `${(next.targetMs - now).toFixed(0)} ms` : "-";
+			el.seqBadge.textContent = next ? `${next.sequence & 0xff}` : "-";
+			el.wakeBadge.textContent = state.wakeLock ? "locked" : state.keepAliveVideo && !state.keepAliveVideo.paused ? "media" : "idle";
+		}
+
+		function updateStatus() {
+			el.clockSource.textContent = state.clockLabel;
+			el.clockSource.className = state.clockLabel === "local" ? "warn" : "ok";
+			el.clockOffset.textContent = fmtMs(state.offsetMs);
+			el.clockRtt.textContent = state.lastRttMs ? fmtMs(state.lastRttMs, 2) : "-";
+			el.schedulerStatus.textContent = state.starting ? "starting" : state.running ? "running" : "stopped";
+			el.schedulerStatus.className = state.running ? "ok" : state.starting ? "warn" : "";
+			if (state.wakeLock) {
+				el.wakeStatus.textContent = "locked";
+				el.wakeStatus.className = "ok";
+			}
+			else if (state.keepAliveVideo && !state.keepAliveVideo.paused) {
+				el.wakeStatus.textContent = "media fallback";
+				el.wakeStatus.className = "warn";
+			}
+			else {
+				el.wakeStatus.textContent = "idle";
+				el.wakeStatus.className = "";
+			}
+
+			if (state.audioContext) {
+				el.audioLatency.textContent = `${fmtMs(audioOutputLatencySeconds() * 1000, 2)}`;
+				el.audioTiming.textContent = state.audioTimingLabel;
+				el.audioTiming.className = state.audioTimingLabel === "output timestamp" ? "ok" : "warn";
+				el.audioState.textContent = `${state.audioContext.state} ${state.lastAudioSchedule}`;
+				el.audioState.className = state.audioContext.state === "running" ? "ok" : "warn";
+			}
+			else {
+				el.audioLatency.textContent = "-";
+				el.audioTiming.textContent = "-";
+				el.audioTiming.className = "";
+				el.audioState.textContent = "-";
+				el.audioState.className = "";
+			}
+		}
+
+		async function start() {
+			if (state.running || state.starting)
+				return stop();
+
+			const token = ++state.runToken;
+			state.starting = true;
+			state.running = false;
+			el.startBtn.textContent = "Stop";
+			el.startBtn.classList.remove("primary");
+			updateStatus();
+			updateRunClass();
+			updateFullscreenClass();
+
+			await primeStartupAudioOutput();
+			if (token !== state.runToken || !state.starting)
+				return;
+
+			try {
+				await requestWakeLock();
+			}
+			catch {
+				updateStatus();
+			}
+			if (token !== state.runToken || !state.starting)
+				return;
+
+			if (el.autoSync.checked && el.timeEndpoint.value.trim()) {
+				try {
+					await syncClock();
+				}
+				catch (error) {
+					log(`sync failed: ${error.message}`);
+				}
+			}
+			if (token !== state.runToken || !state.starting)
+				return;
+
+			state.starting = false;
+			state.running = true;
+			state.nextTargetMs = 0;
+			state.lastScheduledTargetMs = 0;
+			state.audioPrimedAfterCue = false;
+			state.audioTimingLabel = "-";
+			state.scheduled.clear();
+			updateStatus();
+			updateRunClass();
+			updateFullscreenClass();
+			scheduleDueEvents();
+			state.schedulerTimer = window.setInterval(scheduleDueEvents, SCHEDULER_TICK_MS);
+			state.syncTimer = window.setInterval(() => {
+				if (state.running && el.autoSync.checked && el.timeEndpoint.value.trim()) {
+					syncClock().catch((error) => log(`sync failed: ${error.message}`));
+				}
+			}, 15000);
+		}
+
+		function stop() {
+			state.runToken++;
+			state.starting = false;
+			state.running = false;
+			window.clearInterval(state.schedulerTimer);
+			window.clearInterval(state.syncTimer);
+			state.schedulerTimer = 0;
+			state.syncTimer = 0;
+			state.audioPrimedAfterCue = false;
+			state.audioTimingLabel = "-";
+			state.lastAudioSchedule = "-";
+			state.scheduled.clear();
+			stopStartupAudioHold();
+			el.startBtn.textContent = "Start";
+			el.startBtn.classList.add("primary");
+			releaseKeepAwake();
+			updateStatus();
+			updateRunClass();
+			updateFullscreenClass();
+		}
+
+		function updateRunClass() {
+			document.body.classList.toggle("generator-running", state.running);
+		}
+
+		function updateFullscreenClass() {
+			document.body.classList.toggle("fullscreen-running", !!document.fullscreenElement && state.running);
+		}
+
+		function loadQuery() {
+			const params = new URLSearchParams(location.search);
+			const map = {
+				endpoint: el.timeEndpoint,
+				period: el.periodMs,
+				lead: el.leadMs,
+				visual: el.visualMs,
+				gain: el.gain,
+			};
+			for (const [key, input] of Object.entries(map)) {
+				if (params.has(key))
+					input.value = params.get(key);
+			}
+			if (params.get("audio") === "0")
+				el.audioEnabled.checked = false;
+			if (params.get("autosync") === "0")
+				el.autoSync.checked = false;
+		}
+
+		el.startBtn.addEventListener("click", runStart);
+		el.startBtn.addEventListener("touchend", (event) => {
+			event.preventDefault();
+			runStart();
+		}, { passive: false });
+		el.testAudioBtn.addEventListener("click", runTestAudio);
+		el.testAudioBtn.addEventListener("touchend", (event) => {
+			event.preventDefault();
+			runTestAudio();
+		}, { passive: false });
+		el.testMediaBtn.addEventListener("click", runTestMediaAudio);
+		el.testMediaBtn.addEventListener("touchend", (event) => {
+			event.preventDefault();
+			runTestMediaAudio();
+		}, { passive: false });
+		el.fullscreenBtn.addEventListener("click", async () => {
+			try {
+				await enterFullscreen();
+			}
+			catch (error) {
+				log(`fullscreen failed: ${error.message}`);
+			}
+		});
+		el.lockBtn.addEventListener("click", requestWakeLock);
+		el.syncBtn.addEventListener("click", () => {
+			syncClock().catch((error) => {
+				log(`sync failed: ${error.message}`);
+				updateStatus();
+			});
+		});
+		el.gain.addEventListener("input", () => {
+			if (state.masterGain)
+				state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+		});
+		document.addEventListener("visibilitychange", () => {
+			if (document.visibilityState === "visible" && state.running && !state.wakeLock)
+				requestWakeLock();
+		});
+		document.addEventListener("fullscreenchange", () => {
+			updateFullscreenClass();
+		});
+
+		try {
+			ensureMediaHoldElement().load();
+		}
+		catch {
+			/* Playback warm-up will retry on Start. */
+		}
+
+		loadQuery();
+		updateStatus();
+		requestAnimationFrame(drawStage);
+	})();
+	</script>
+</body>
+</html>

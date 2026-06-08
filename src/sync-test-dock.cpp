@@ -22,6 +22,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <QVBoxLayout>
 #include <QTimer>
 #include <QMainWindow>
+#include <algorithm>
+#include <cstdlib>
+#include <vector>
 #include <obs-frontend-api.h>
 #include "plugin-macros.generated.h"
 #include "sync-test-dock.hpp"
@@ -44,9 +47,17 @@ SyncTestDock::SyncTestDock(QWidget *parent) : QFrame(parent)
 	connect(startButton, &QPushButton::clicked, this, &SyncTestDock::on_start_stop);
 
 	QLabel *label;
-	label = new QLabel(obs_module_text("Label.Latency"), this);
-	label->setProperty("class", "text-large");
+	label = new QLabel(obs_module_text("Label.Mode"), this);
 	topLayout->addWidget(label, y, 0);
+
+	modeSelector = new QComboBox(this);
+	modeSelector->addItem(obs_module_text("Mode.AVOffsetClip"), SYNC_TEST_DETECT_AV_OFFSET);
+	modeSelector->addItem(obs_module_text("Mode.Legacy"), SYNC_TEST_DETECT_LEGACY);
+	topLayout->addWidget(modeSelector, y++, 1);
+
+	latencyLabel = new QLabel(obs_module_text("Label.AVOffset"), this);
+	latencyLabel->setProperty("class", "text-large");
+	topLayout->addWidget(latencyLabel, y, 0);
 
 	latencyDisplay = new QLabel("-", this);
 	latencyDisplay->setObjectName("latencyDisplay");
@@ -56,6 +67,14 @@ SyncTestDock::SyncTestDock(QWidget *parent) : QFrame(parent)
 	latencyPolarity = new QLabel("-", this);
 	latencyPolarity->setObjectName("latencyPolarity");
 	topLayout->addWidget(latencyPolarity, y++, 1);
+
+	label = new QLabel(obs_module_text("Label.GlassToGlass"), this);
+	topLayout->addWidget(label, y, 0);
+
+	glassToGlassDisplay = new QLabel("-", this);
+	glassToGlassDisplay->setObjectName("glassToGlassDisplay");
+	glassToGlassDisplay->setProperty("class", "text-large");
+	topLayout->addWidget(glassToGlassDisplay, y++, 1);
 
 	label = new QLabel(obs_module_text("Label.Index"), this);
 	topLayout->addWidget(label, y, 0);
@@ -141,7 +160,10 @@ void SyncTestDock::cb_sync_found(void *param, calldata_t *cd)
 void SyncTestDock::on_start_stop()
 {
 	if (!sync_test) /* request to start */ {
-		OBSOutputAutoRelease o = obs_output_create(OUTPUT_ID, "sync-test-output", nullptr, nullptr);
+		OBSDataAutoRelease settings = obs_data_create();
+		const int detect_mode = modeSelector ? modeSelector->currentData().toInt() : SYNC_TEST_DETECT_AV_OFFSET;
+		obs_data_set_int(settings, "detect_mode", detect_mode);
+		OBSOutputAutoRelease o = obs_output_create(OUTPUT_ID, "sync-test-output", settings, nullptr);
 		if (!o) {
 			blog(LOG_ERROR, "Failed to create sync-test-output.");
 			return;
@@ -153,6 +175,12 @@ void SyncTestDock::on_start_stop()
 		received_video_index_max = 256;
 		received_audio_index_max = 256;
 		audio_index_max = 256;
+		av_offset_samples.clear();
+		if (latencyLabel)
+			latencyLabel->setText(obs_module_text(
+				detect_mode == SYNC_TEST_DETECT_AV_OFFSET ? "Label.AVOffset" : "Label.Latency"));
+		if (glassToGlassDisplay)
+			glassToGlassDisplay->setText(QStringLiteral("-"));
 
 		auto *sh = obs_output_get_signal_handler(o);
 		signal_handler_connect(sh, "video_marker_found", cb_video_marker_found, this);
@@ -185,8 +213,47 @@ static int missed_markers(int index, int last_index, int max_index)
 	return (max_index + index - last_index - 1) % max_index;
 }
 
+static constexpr int64_t AV_OFFSET_PHASE_RESET_NS = 15000000;
+
+static int64_t median_ns(const std::deque<int64_t> &samples)
+{
+	std::vector<int64_t> sorted(samples.begin(), samples.end());
+	std::sort(sorted.begin(), sorted.end());
+	const size_t mid = sorted.size() / 2;
+	if (sorted.size() & 1)
+		return sorted[mid];
+	return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+static int64_t median_abs_deviation_ns(const std::deque<int64_t> &samples, int64_t median)
+{
+	std::deque<int64_t> deviations;
+	for (int64_t sample : samples)
+		deviations.push_back(std::llabs(sample - median));
+	return median_ns(deviations);
+}
+
+static double ns_to_ms(int64_t ns)
+{
+	return (double)ns * 1e-6;
+}
+
 void SyncTestDock::on_video_marker_found(struct video_marker_found_s data)
 {
+	if (data.protocol >= 2) {
+		frequencyDisplay->setText(obs_module_text("Display.AcousticV2"));
+		const uint64_t display_sequence = data.qr_data.has_ntp_ms ? data.qr_data.index : data.sequence;
+		videoIndexDisplay->setText(QStringLiteral("%1").arg(display_sequence));
+		if (glassToGlassDisplay) {
+			if (data.has_glass_to_glass)
+				glassToGlassDisplay->setText(
+					QStringLiteral("%1 ms").arg(ns_to_ms(data.glass_to_glass_ns), 0, 'f', 1));
+			else
+				glassToGlassDisplay->setText(QStringLiteral("-"));
+		}
+		return;
+	}
+
 	const int index = data.qr_data.index;
 	missed_video_ix += missed_markers(index, last_video_ix, received_video_index_max);
 	last_video_ix = index;
@@ -199,6 +266,11 @@ void SyncTestDock::on_video_marker_found(struct video_marker_found_s data)
 
 void SyncTestDock::on_audio_marker_found(struct audio_marker_found_s data)
 {
+	if (data.protocol >= 2) {
+		audioIndexDisplay->setText(QStringLiteral("%1").arg(data.sequence));
+		return;
+	}
+
 	const int index = data.index;
 	missed_audio_ix += missed_markers(index, last_audio_ix, received_audio_index_max);
 	last_audio_ix = index;
@@ -211,10 +283,42 @@ void SyncTestDock::on_audio_marker_found(struct audio_marker_found_s data)
 void SyncTestDock::on_sync_found(sync_index data)
 {
 	int64_t ts = (int64_t)data.audio_ts - (int64_t)data.video_ts;
-	latencyDisplay->setText(QStringLiteral("%1 ms").arg(ts * 1e-6, 2, 'f', 1));
-	indexDisplay->setText(QStringLiteral("%1").arg(data.index));
-	if (ts > 0)
+	int64_t display_ts = ts;
+	if (data.protocol >= 2) {
+		if (latencyLabel)
+			latencyLabel->setText(obs_module_text("Label.AVOffset"));
+		if (data.has_glass_to_glass && glassToGlassDisplay)
+			glassToGlassDisplay->setText(
+				QStringLiteral("%1 ms").arg(ns_to_ms(data.glass_to_glass_ns), 0, 'f', 1));
+		if (!av_offset_samples.empty()) {
+			const int64_t median = median_ns(av_offset_samples);
+			if (std::llabs(ts - median) > AV_OFFSET_PHASE_RESET_NS)
+				av_offset_samples.clear();
+		}
+		av_offset_samples.push_back(ts);
+		while (av_offset_samples.size() > 9)
+			av_offset_samples.pop_front();
+		if (av_offset_samples.size() >= 3) {
+			display_ts = median_ns(av_offset_samples);
+			const int64_t jitter = median_abs_deviation_ns(av_offset_samples, display_ts);
+			latencyDisplay->setText(QStringLiteral("%1 ms (raw %2, +/- %3)")
+							.arg(ns_to_ms(display_ts), 0, 'f', 1)
+							.arg(ns_to_ms(ts), 0, 'f', 1)
+							.arg(ns_to_ms(jitter), 0, 'f', 1));
+		}
+		else {
+			latencyDisplay->setText(QStringLiteral("%1 ms").arg(ns_to_ms(ts), 0, 'f', 1));
+		}
+		indexDisplay->setText(QStringLiteral("%1").arg(data.sequence));
+	}
+	else {
+		if (latencyLabel)
+			latencyLabel->setText(obs_module_text("Label.Latency"));
+		latencyDisplay->setText(QStringLiteral("%1 ms").arg(ns_to_ms(ts), 0, 'f', 1));
+		indexDisplay->setText(QStringLiteral("%1").arg(data.index));
+	}
+	if (display_ts > 0)
 		latencyPolarity->setText(obs_module_text("Display.Polarity.Positive"));
-	else if (ts < 0)
+	else if (display_ts < 0)
 		latencyPolarity->setText(obs_module_text("Display.Polarity.Negative"));
 }

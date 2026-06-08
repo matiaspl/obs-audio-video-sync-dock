@@ -25,6 +25,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include <algorithm>
 #include <mutex>
 #include <complex>
+#include <vector>
+#include <chrono>
+#include <util/platform.h>
 #include "quirc.h"
 #include "sync-test-output.hpp"
 #include "peak-finder.hpp"
@@ -35,6 +38,25 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #define N_AUDIO_SYMBOLS 16
 #define N_SYMBOL_BUFFER 20
+
+#define V2_MARKER_MS 80
+#define V2_MARKER_F0 500.0f
+#define V2_MARKER_F1 2500.0f
+#define V2_MARKER_TICK_MS 6
+#define V2_MARKER_CHIRP_GAIN 0.72f
+#define V2_MARKER_TICK_GAIN 0.28f
+#define V2_SYMBOL_MS 70
+#define V2_GUARD_MS 60
+#define V2_PAYLOAD_SYMBOLS 5
+#define V2_DTMF_ROWS 4
+#define V2_DTMF_COLS 3
+#define V2_PAYLOAD_BASE (V2_DTMF_ROWS * V2_DTMF_COLS)
+#define V2_CORRELATION_STEP 4
+#define V2_CORRELATION_THRESHOLD 0.42f
+#define V2_PAYLOAD_SEARCH_MS 5
+#define V2_DUPLICATE_WINDOW_MS 500
+#define V2_PAIR_WINDOW_NS 10000000000ULL
+#define V2_PACKET_SAMPLES_MAX_SECONDS 4
 
 /* There are several reason to limit the width and the height.
  * - Since a square of 3/8 QR-code-length is calculated using uint32_t,
@@ -89,9 +111,17 @@ struct corner_type
 	uint32_t r = 0;
 };
 
+struct st_audio_v2_candidate
+{
+	uint64_t marker_start_sample = 0;
+	uint64_t packet_end_sample = 0;
+	float score = 0.0f;
+};
+
 struct sync_test_output
 {
 	obs_output_t *context;
+	uint32_t detect_mode = SYNC_TEST_DETECT_LEGACY;
 
 	/* Configuration from OBS output context */
 	uint32_t video_width = 0, video_height = 0;
@@ -118,6 +148,17 @@ struct sync_test_output
 	struct st_audio_buffer audio_buffer;
 	struct peak_finder audio_marker_finder;
 	uint32_t last_audio_index_max = 256;
+
+	std::deque<float> audio_v2_raw_buffer;
+	std::deque<uint64_t> audio_v2_raw_ts_buffer;
+	uint64_t audio_v2_raw_first_sample = 0;
+	uint64_t audio_v2_next_sample = 0;
+	uint64_t audio_v2_first_ts = 0;
+	std::vector<float> audio_v2_marker;
+	std::deque<float> audio_v2_corr_buffer;
+	struct peak_finder audio_v2_marker_finder;
+	std::list<struct st_audio_v2_candidate> audio_v2_candidates;
+	uint64_t audio_v2_last_marker_ts = 0;
 
 	/* Multiplex sync pattern detection result */
 	std::list<struct sync_index> sync_indices;
@@ -146,7 +187,7 @@ static const char *st_get_name(void *)
 	return "sync-test-output";
 }
 
-static void *st_create(obs_data_t *, obs_output_t *output)
+static void *st_create(obs_data_t *settings, obs_output_t *output)
 {
 	static const char *signals[] = {
 		"void video_marker_found(ptr data)",
@@ -159,6 +200,8 @@ static void *st_create(obs_data_t *, obs_output_t *output)
 
 	auto *st = new sync_test_output;
 	st->context = output;
+	if (settings)
+		st->detect_mode = (uint32_t)obs_data_get_int(settings, "detect_mode");
 
 	return st;
 }
@@ -173,6 +216,98 @@ static uint8_t get_intensity_10le(const uint8_t *data)
 {
 	uint16_t v = (data[0] >> 2) | (data[1] << 6);
 	return (uint8_t)std::min<uint16_t>(v, 0xFF);
+}
+
+static uint32_t ms_to_samples(uint32_t sample_rate, uint32_t ms)
+{
+	return (uint32_t)util_mul_div64(sample_rate, ms, 1000);
+}
+
+static uint64_t samples_to_ns(uint64_t samples, uint32_t sample_rate)
+{
+	return util_mul_div64(samples, 1000000000ULL, sample_rate);
+}
+
+static uint64_t system_epoch_ns()
+{
+	using namespace std::chrono;
+	return (uint64_t)duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
+}
+
+static uint64_t obs_timestamp_to_epoch_ns(uint64_t timestamp)
+{
+	const uint64_t now_epoch_ns = system_epoch_ns();
+	const uint64_t now_obs_ns = os_gettime_ns();
+
+	if (timestamp <= now_obs_ns) {
+		const uint64_t delta = now_obs_ns - timestamp;
+		return delta < now_epoch_ns ? now_epoch_ns - delta : 0;
+	}
+
+	return now_epoch_ns + (timestamp - now_obs_ns);
+}
+
+static bool glass_to_glass_from_qr(const struct st_qr_data &qr_data, uint64_t timestamp, uint64_t *source_epoch_ns,
+				   uint64_t *video_epoch_ns, int64_t *glass_to_glass_ns)
+{
+	if (!qr_data.has_ntp_ms)
+		return false;
+
+	*source_epoch_ns = qr_data.ntp_ms * 1000000ULL;
+	*video_epoch_ns = obs_timestamp_to_epoch_ns(timestamp);
+	*glass_to_glass_ns = (int64_t)*video_epoch_ns - (int64_t)*source_epoch_ns;
+	return true;
+}
+
+static std::vector<float> make_audio_v2_marker(uint32_t sample_rate)
+{
+	const uint32_t n = ms_to_samples(sample_rate, V2_MARKER_MS);
+	const uint32_t center = n / 2;
+	const uint32_t first_count = std::max<uint32_t>(1, center);
+	const uint32_t second_count = std::max<uint32_t>(1, n - center);
+	const double first_duration = (double)first_count / (double)sample_rate;
+	const double second_duration = (double)second_count / (double)sample_rate;
+	const double up_slope = ((double)V2_MARKER_F1 - (double)V2_MARKER_F0) / first_duration;
+	const double down_slope = ((double)V2_MARKER_F1 - (double)V2_MARKER_F0) / second_duration;
+	const double phase_center =
+		2.0 * M_PI * ((double)V2_MARKER_F0 * first_duration + 0.5 * up_slope * first_duration * first_duration);
+	const double tick_sigma = ((double)V2_MARKER_TICK_MS / 1000.0) / 6.0;
+	const double tick_radius = (double)V2_MARKER_TICK_MS / 2000.0;
+	std::vector<float> marker;
+	marker.reserve(n);
+	float peak = 0.0f;
+
+	for (uint32_t i = 0; i < n; i++) {
+		double phase;
+		if (i < center) {
+			const double t = (double)i / (double)sample_rate;
+			phase = 2.0 * M_PI * ((double)V2_MARKER_F0 * t + 0.5 * up_slope * t * t);
+		}
+		else {
+			const double t = (double)(i - center) / (double)sample_rate;
+			phase = phase_center + 2.0 * M_PI * ((double)V2_MARKER_F1 * t - 0.5 * down_slope * t * t);
+		}
+
+		const double window = 0.5 - 0.5 * cos(2.0 * M_PI * (double)i / (double)std::max<uint32_t>(1, n - 1));
+		const double chirp = sin(phase) * window;
+		const double center_time = (double)((int64_t)i - (int64_t)center) / (double)sample_rate;
+		double tick = 0.0;
+		if (fabs(center_time) <= tick_radius) {
+			const double x = center_time / tick_sigma;
+			tick = (1.0 - x * x) * exp(-0.5 * x * x);
+		}
+
+		const float sample = V2_MARKER_CHIRP_GAIN * (float)chirp + V2_MARKER_TICK_GAIN * (float)tick;
+		peak = std::max(peak, fabsf(sample));
+		marker.push_back(sample);
+	}
+
+	if (peak > 0.0f) {
+		for (auto &sample : marker)
+			sample /= peak;
+	}
+
+	return marker;
 }
 
 static bool st_start(void *data)
@@ -262,6 +397,18 @@ static bool st_start(void *data)
 
 	st->audio_sample_rate = audio_output_get_sample_rate(audio);
 	st->audio_channels = audio_output_get_channels(audio);
+	st->start_ts = 0;
+	st->audio_v2_marker = make_audio_v2_marker(st->audio_sample_rate);
+	st->audio_v2_raw_buffer.clear();
+	st->audio_v2_raw_ts_buffer.clear();
+	st->audio_v2_corr_buffer.clear();
+	st->audio_v2_candidates.clear();
+	st->audio_v2_raw_first_sample = 0;
+	st->audio_v2_next_sample = 0;
+	st->audio_v2_first_ts = 0;
+	st->audio_v2_last_marker_ts = 0;
+	st->audio_v2_marker_finder = peak_finder();
+	st->audio_v2_marker_finder.dumping_range = 1000000000ULL;
 
 	obs_output_begin_data_capture(st->context, OBS_OUTPUT_VIDEO | OBS_OUTPUT_AUDIO);
 
@@ -486,6 +633,21 @@ static bool is_overlapped(uint32_t index, uint32_t index_max, uint32_t next_inde
 	return index_max && ((index_max + next_index - index) % index_max) > index_max / 2;
 }
 
+static bool sync_index_matches(const struct sync_index &si, uint32_t protocol, uint64_t sequence)
+{
+	return si.protocol == protocol && si.sequence == sequence;
+}
+
+static uint64_t abs_diff_u64(uint64_t a, uint64_t b)
+{
+	return a > b ? a - b : b - a;
+}
+
+static uint64_t latest_sync_ts(const struct sync_index &si)
+{
+	return std::max(si.video_ts, si.audio_ts);
+}
+
 static void signal_sync_found(obs_output_t *ctx, const struct sync_index *si)
 {
 	uint8_t stack[64];
@@ -497,11 +659,86 @@ static void signal_sync_found(obs_output_t *ctx, const struct sync_index *si)
 	signal_handler_signal(sh, "sync_found", &cd);
 }
 
+static void set_sync_glass_to_glass(struct sync_index &si, bool has_glass_to_glass, int64_t glass_to_glass_ns,
+				    uint64_t source_epoch_ns, uint64_t video_epoch_ns)
+{
+	if (!has_glass_to_glass)
+		return;
+
+	si.has_glass_to_glass = true;
+	si.glass_to_glass_ns = glass_to_glass_ns;
+	si.source_epoch_ns = source_epoch_ns;
+	si.video_epoch_ns = video_epoch_ns;
+}
+
+static void sync_sequence_found(struct sync_test_output *st, uint64_t sequence, uint64_t ts, bool is_video, int index,
+				float score, bool has_glass_to_glass = false, int64_t glass_to_glass_ns = 0,
+				uint64_t source_epoch_ns = 0, uint64_t video_epoch_ns = 0)
+{
+	std::unique_lock<std::mutex> lock(st->mutex);
+
+	for (auto it = st->sync_indices.begin(); it != st->sync_indices.end();) {
+		if (it->protocol == 2) {
+			const uint64_t latest_ts = latest_sync_ts(*it);
+			if (latest_ts && latest_ts + V2_PAIR_WINDOW_NS < ts) {
+				it = st->sync_indices.erase(it);
+				continue;
+			}
+		}
+
+		if (!sync_index_matches(*it, 2, sequence)) {
+			it++;
+			continue;
+		}
+
+		if ((is_video && it->video_ts) || (!is_video && it->audio_ts)) {
+			const uint64_t side_ts = is_video ? it->video_ts : it->audio_ts;
+			if (abs_diff_u64(side_ts, ts) <= V2_PAIR_WINDOW_NS)
+				return;
+
+			st->sync_indices.erase(it);
+			break;
+		}
+
+		const uint64_t other_ts = is_video ? it->audio_ts : it->video_ts;
+		if (other_ts && abs_diff_u64(other_ts, ts) > V2_PAIR_WINDOW_NS) {
+			st->sync_indices.erase(it);
+			break;
+		}
+
+		(is_video ? it->video_ts : it->audio_ts) = ts;
+		(is_video ? it->video_score : it->audio_score) = score;
+		if (is_video)
+			set_sync_glass_to_glass(*it, has_glass_to_glass, glass_to_glass_ns, source_epoch_ns,
+						video_epoch_ns);
+		signal_sync_found(st->context, &*it);
+		return;
+	}
+
+	while (st->sync_indices.size() >= 256)
+		st->sync_indices.erase(st->sync_indices.begin());
+
+	auto &ref = st->sync_indices.emplace_back();
+	ref.protocol = 2;
+	ref.sequence = sequence;
+	ref.index = index;
+	ref.index_max = 0;
+	(is_video ? ref.video_ts : ref.audio_ts) = ts;
+	(is_video ? ref.video_score : ref.audio_score) = score;
+	if (is_video)
+		set_sync_glass_to_glass(ref, has_glass_to_glass, glass_to_glass_ns, source_epoch_ns, video_epoch_ns);
+}
+
 static void sync_index_found(struct sync_test_output *st, int index, uint64_t ts, bool is_video, uint32_t index_max)
 {
 	std::unique_lock<std::mutex> lock(st->mutex);
 
 	for (auto it = st->sync_indices.begin(); it != st->sync_indices.end();) {
+		if (it->protocol != 1) {
+			it++;
+			continue;
+		}
+
 		if ((it->video_ts && is_video) || (it->audio_ts && !is_video)) {
 			if (is_overlapped(it->index, it->index_max, index)) {
 				st->sync_indices.erase(it++);
@@ -535,6 +772,7 @@ static void sync_index_found(struct sync_test_output *st, int index, uint64_t ts
 		st->sync_indices.erase(st->sync_indices.begin());
 
 	auto &ref = st->sync_indices.emplace_back();
+	ref.protocol = 1;
 	ref.index = index;
 	(is_video ? ref.video_ts : ref.audio_ts) = ts;
 	ref.index_max = index_max;
@@ -550,12 +788,24 @@ static void video_marker_found(struct sync_test_output *st, uint64_t timestamp, 
 	struct video_marker_found_s data;
 	data.timestamp = timestamp - st->start_ts;
 	data.score = score;
+	data.protocol = st->qr_data.protocol;
+	data.sequence = st->qr_data.sequence;
+	data.glass_to_glass_ns = 0;
+	data.source_epoch_ns = 0;
+	data.video_epoch_ns = 0;
+	data.has_glass_to_glass = glass_to_glass_from_qr(st->qr_data, timestamp, &data.source_epoch_ns,
+							 &data.video_epoch_ns, &data.glass_to_glass_ns);
 	data.qr_data = st->qr_data;
 
 	calldata_set_ptr(&cd, "data", &data);
 	signal_handler_signal(sh, "video_marker_found", &cd);
 
-	sync_index_found(st, data.qr_data.index, data.timestamp, true, data.qr_data.index_max);
+	if (data.protocol >= 2)
+		sync_sequence_found(st, data.sequence, data.timestamp, true, data.qr_data.index, data.score,
+				    data.has_glass_to_glass, data.glass_to_glass_ns, data.source_epoch_ns,
+				    data.video_epoch_ns);
+	else
+		sync_index_found(st, data.qr_data.index, data.timestamp, true, data.qr_data.index_max);
 }
 
 static void st_raw_video(void *data, struct video_data *frame)
@@ -585,7 +835,7 @@ static uint32_t identify_audio_index_max(struct sync_test_output *st, int index)
 	uint32_t cand_diff = 256;
 
 	for (auto it = st->sync_indices.begin(); it != st->sync_indices.end(); it++) {
-		if (!it->video_ts || !it->index_max)
+		if (it->protocol != 1 || !it->video_ts || !it->index_max)
 			continue;
 		uint32_t diff = (last_index_max + index - it->index) % last_index_max;
 		if (diff < cand_diff) {
@@ -608,6 +858,387 @@ static uint32_t crc4_check(uint32_t data, uint32_t size)
 		p >>= 1;
 	}
 	return data;
+}
+
+static uint8_t crc8_u8(uint8_t data)
+{
+	uint8_t crc = data;
+	for (int bit = 0; bit < 8; bit++) {
+		if (crc & 0x80)
+			crc = (uint8_t)((crc << 1) ^ 0x07);
+		else
+			crc <<= 1;
+	}
+	return crc;
+}
+
+static uint64_t audio_v2_sample_from_ts(struct sync_test_output *st, uint64_t ts)
+{
+	if (st->audio_v2_raw_ts_buffer.empty())
+		return 0;
+
+	for (size_t i = st->audio_v2_raw_ts_buffer.size(); i > 0; i--) {
+		if (st->audio_v2_raw_ts_buffer[i - 1] <= ts)
+			return st->audio_v2_raw_first_sample + i - 1;
+	}
+
+	return st->audio_v2_raw_first_sample;
+}
+
+static bool audio_v2_raw_available(struct sync_test_output *st, uint64_t start, uint64_t count)
+{
+	if (start < st->audio_v2_raw_first_sample)
+		return false;
+	return start + count <= st->audio_v2_raw_first_sample + st->audio_v2_raw_buffer.size();
+}
+
+static bool audio_v2_ts_from_sample(struct sync_test_output *st, uint64_t sample, uint64_t *ts)
+{
+	if (!audio_v2_raw_available(st, sample, 1))
+		return false;
+
+	const size_t offset = (size_t)(sample - st->audio_v2_raw_first_sample);
+	if (offset >= st->audio_v2_raw_ts_buffer.size())
+		return false;
+
+	*ts = st->audio_v2_raw_ts_buffer[offset];
+	return true;
+}
+
+static bool audio_v2_ts_from_sample_offset(struct sync_test_output *st, uint64_t sample, double sample_offset,
+					   uint64_t *ts)
+{
+	uint64_t base_ts = 0;
+	if (!audio_v2_ts_from_sample(st, sample, &base_ts))
+		return false;
+
+	const int64_t offset_ns = (int64_t)llround(sample_offset * 1000000000.0 / (double)st->audio_sample_rate);
+	if (offset_ns < 0) {
+		const uint64_t delta = (uint64_t)-offset_ns;
+		*ts = base_ts > delta ? base_ts - delta : 0;
+	}
+	else {
+		*ts = base_ts + (uint64_t)offset_ns;
+	}
+	return true;
+}
+
+static double audio_v2_goertzel_power(struct sync_test_output *st, uint64_t start, uint32_t count, float freq)
+{
+	if (!audio_v2_raw_available(st, start, count))
+		return -1.0;
+
+	const double omega = 2.0 * M_PI * (double)freq / (double)st->audio_sample_rate;
+	const double coeff = 2.0 * cos(omega);
+	double q0 = 0.0;
+	double q1 = 0.0;
+	double q2 = 0.0;
+	size_t offset = (size_t)(start - st->audio_v2_raw_first_sample);
+
+	for (uint32_t i = 0; i < count; i++) {
+		const double sample = st->audio_v2_raw_buffer[offset + i];
+		q0 = coeff * q1 - q2 + sample;
+		q2 = q1;
+		q1 = q0;
+	}
+
+	return q1 * q1 + q2 * q2 - coeff * q1 * q2;
+}
+
+static float audio_v2_marker_score_at(struct sync_test_output *st, uint64_t start)
+{
+	const uint32_t marker_samples = (uint32_t)st->audio_v2_marker.size();
+	if (!audio_v2_raw_available(st, start, marker_samples))
+		return 0.0f;
+
+	double corr = 0.0;
+	double energy = 0.0;
+	double ref_energy = 0.0;
+	size_t offset = (size_t)(start - st->audio_v2_raw_first_sample);
+	for (uint32_t i = 0; i < marker_samples; i++) {
+		const double x = st->audio_v2_raw_buffer[offset + i];
+		const double ref = st->audio_v2_marker[i];
+		corr += x * ref;
+		energy += x * x;
+		ref_energy += ref * ref;
+	}
+
+	if (energy <= 1e-9 || ref_energy <= 1e-9)
+		return 0.0f;
+
+	return (float)(fabs(corr) / sqrt(energy * ref_energy));
+}
+
+static bool audio_v2_refine_marker_start(struct sync_test_output *st, uint64_t coarse_start, uint64_t *refined_start,
+					 double *sample_offset, float *refined_score)
+{
+	const uint32_t radius = std::max<uint32_t>(2, V2_CORRELATION_STEP);
+	const uint64_t scan_start = coarse_start > radius ? coarse_start - radius : 0;
+	const uint64_t scan_end = coarse_start + radius;
+
+	uint64_t best_start = coarse_start;
+	float best_score = -1.0f;
+	for (uint64_t start = scan_start; start <= scan_end; start++) {
+		const float score = audio_v2_marker_score_at(st, start);
+		if (score > best_score) {
+			best_score = score;
+			best_start = start;
+		}
+	}
+
+	double offset = 0.0;
+	if (best_start > scan_start && best_start < scan_end) {
+		const double y0 = best_score;
+		const double ym = audio_v2_marker_score_at(st, best_start - 1);
+		const double yp = audio_v2_marker_score_at(st, best_start + 1);
+		const double denom = ym - 2.0 * y0 + yp;
+		if (fabs(denom) > 1e-12) {
+			const double delta = 0.5 * (ym - yp) / denom;
+			if (delta >= -1.0 && delta <= 1.0)
+				offset = delta;
+		}
+	}
+
+	*refined_start = best_start;
+	*sample_offset = offset;
+	*refined_score = best_score;
+	return best_score >= 0.0f;
+}
+
+static bool audio_v2_decode_payload_at(struct sync_test_output *st, uint64_t payload_start_sample, uint32_t *sequence,
+				       float *confidence)
+{
+	static const float rows[V2_DTMF_ROWS] = {697.0f, 770.0f, 852.0f, 941.0f};
+	static const float cols[V2_DTMF_COLS] = {1209.0f, 1336.0f, 1477.0f};
+	const uint32_t symbol_samples = ms_to_samples(st->audio_sample_rate, V2_SYMBOL_MS);
+	const uint32_t guard_samples = ms_to_samples(st->audio_sample_rate, V2_GUARD_MS);
+	const uint32_t symbol_stride = symbol_samples + guard_samples;
+
+	uint64_t payload = 0;
+	float min_margin = 1000.0f;
+
+	for (uint32_t symbol = 0; symbol < V2_PAYLOAD_SYMBOLS; symbol++) {
+		const uint64_t symbol_start = payload_start_sample + (uint64_t)symbol * symbol_stride;
+		double row_power[V2_DTMF_ROWS];
+		double col_power[V2_DTMF_COLS];
+
+		for (int i = 0; i < V2_DTMF_ROWS; i++) {
+			row_power[i] = audio_v2_goertzel_power(st, symbol_start, symbol_samples, rows[i]);
+			if (row_power[i] < 0.0)
+				return false;
+		}
+		for (int i = 0; i < V2_DTMF_COLS; i++) {
+			col_power[i] = audio_v2_goertzel_power(st, symbol_start, symbol_samples, cols[i]);
+			if (col_power[i] < 0.0)
+				return false;
+		}
+
+		int row0 = 0, row1 = 1, col0 = 0, col1 = 1;
+		for (int i = 1; i < V2_DTMF_ROWS; i++) {
+			if (row_power[i] > row_power[row0]) {
+				row1 = row0;
+				row0 = i;
+			}
+			else if (row_power[i] > row_power[row1]) {
+				row1 = i;
+			}
+		}
+
+		for (int i = 1; i < V2_DTMF_COLS; i++) {
+			if (col_power[i] > col_power[col0]) {
+				col1 = col0;
+				col0 = i;
+			}
+			else if (col_power[i] > col_power[col1]) {
+				col1 = i;
+			}
+		}
+
+		const float row_margin = (float)(row_power[row0] / std::max(1e-9, row_power[row1]));
+		const float col_margin = (float)(col_power[col0] / std::max(1e-9, col_power[col1]));
+		min_margin = std::min(min_margin, std::min(row_margin, col_margin));
+		if (row_margin < 1.45f || col_margin < 1.45f)
+			return false;
+
+		payload = payload * V2_PAYLOAD_BASE + (uint64_t)(row0 * V2_DTMF_COLS + col0);
+	}
+
+	if (payload > 0xFFFF)
+		return false;
+
+	const uint8_t code = (uint8_t)(payload >> 8);
+	const uint8_t crc = (uint8_t)(payload & 0xFF);
+	if (crc != crc8_u8(code))
+		return false;
+
+	*sequence = code;
+	*confidence = min_margin;
+	return true;
+}
+
+static bool audio_v2_decode_candidate(struct sync_test_output *st, const struct st_audio_v2_candidate &cand,
+				      uint32_t *sequence, uint64_t *event_ts, float *confidence)
+{
+	const uint32_t marker_samples = (uint32_t)st->audio_v2_marker.size();
+	const uint32_t marker_center_samples = marker_samples / 2;
+	const uint32_t guard_samples = ms_to_samples(st->audio_sample_rate, V2_GUARD_MS);
+	const uint32_t step_samples = std::max<uint32_t>(1, st->audio_sample_rate / 2000);
+
+	uint64_t refined_start = cand.marker_start_sample;
+	double sample_offset = 0.0;
+	float refined_score = 0.0f;
+	if (!audio_v2_refine_marker_start(st, refined_start, &refined_start, &sample_offset, &refined_score) ||
+	    refined_score < V2_CORRELATION_THRESHOLD)
+		return false;
+
+	uint32_t decoded_sequence = 0;
+	float payload_confidence = 0.0f;
+	const uint64_t payload_start = refined_start + marker_samples + guard_samples;
+	if (!audio_v2_decode_payload_at(st, payload_start, &decoded_sequence, &payload_confidence)) {
+		const uint32_t decode_radius = ms_to_samples(st->audio_sample_rate, V2_PAYLOAD_SEARCH_MS);
+		bool decoded = false;
+		for (uint32_t delta = step_samples; delta <= decode_radius && !decoded; delta += step_samples) {
+			for (int direction = -1; direction <= 1; direction += 2) {
+				uint64_t candidate_payload_start = 0;
+				if (direction < 0) {
+					if (payload_start < delta)
+						continue;
+					candidate_payload_start = payload_start - delta;
+				}
+				else {
+					candidate_payload_start = payload_start + delta;
+				}
+				if (audio_v2_decode_payload_at(st, candidate_payload_start, &decoded_sequence,
+							       &payload_confidence)) {
+					decoded = true;
+					break;
+				}
+			}
+		}
+		if (!decoded)
+			return false;
+	}
+
+	*sequence = decoded_sequence;
+	if (!audio_v2_ts_from_sample_offset(st, refined_start + marker_center_samples, sample_offset, event_ts))
+		return false;
+	*confidence = std::min(refined_score, payload_confidence);
+	return true;
+}
+
+static void audio_v2_signal_marker(struct sync_test_output *st, uint32_t sequence, uint64_t timestamp, float score)
+{
+	uint8_t stack[64];
+	struct calldata cd;
+	calldata_init_fixed(&cd, stack, sizeof(stack));
+	auto *sh = obs_output_get_signal_handler(st->context);
+
+	struct audio_marker_found_s data;
+	data.timestamp = timestamp - st->start_ts;
+	data.index = (int)(sequence & 0xFF);
+	data.score = score;
+	data.index_max = 0;
+	data.protocol = 2;
+	data.sequence = sequence;
+
+	calldata_set_ptr(&cd, "data", &data);
+	signal_handler_signal(sh, "audio_marker_found", &cd);
+
+	sync_sequence_found(st, sequence, data.timestamp, false, data.index, data.score);
+}
+
+static void audio_v2_process_candidates(struct sync_test_output *st)
+{
+	for (auto it = st->audio_v2_candidates.begin(); it != st->audio_v2_candidates.end();) {
+		if (it->marker_start_sample < st->audio_v2_raw_first_sample) {
+			st->audio_v2_candidates.erase(it++);
+			continue;
+		}
+
+		if (st->audio_v2_next_sample < it->packet_end_sample) {
+			it++;
+			continue;
+		}
+
+		uint32_t sequence = 0;
+		float confidence = 0.0f;
+		uint64_t event_ts = 0;
+		if (audio_v2_decode_candidate(st, *it, &sequence, &event_ts, &confidence))
+			audio_v2_signal_marker(st, sequence, event_ts, confidence);
+
+		st->audio_v2_candidates.erase(it++);
+	}
+}
+
+static void audio_v2_push_sample(struct sync_test_output *st, float sample, uint64_t ts)
+{
+	if (!st->audio_v2_first_ts)
+		st->audio_v2_first_ts = ts;
+
+	const uint64_t sample_index = st->audio_v2_next_sample++;
+	const size_t raw_max = (size_t)st->audio_sample_rate * V2_PACKET_SAMPLES_MAX_SECONDS;
+	st->audio_v2_raw_buffer.push_back(sample);
+	st->audio_v2_raw_ts_buffer.push_back(ts);
+	while (st->audio_v2_raw_buffer.size() > raw_max) {
+		st->audio_v2_raw_buffer.pop_front();
+		st->audio_v2_raw_ts_buffer.pop_front();
+		st->audio_v2_raw_first_sample++;
+	}
+
+	if (st->audio_v2_marker.empty())
+		return;
+
+	st->audio_v2_corr_buffer.push_back(sample);
+	while (st->audio_v2_corr_buffer.size() > st->audio_v2_marker.size())
+		st->audio_v2_corr_buffer.pop_front();
+
+	if (st->audio_v2_corr_buffer.size() < st->audio_v2_marker.size() || sample_index % V2_CORRELATION_STEP != 0) {
+		audio_v2_process_candidates(st);
+		return;
+	}
+
+	double corr = 0.0;
+	double energy = 0.0;
+	double ref_energy = 0.0;
+	for (size_t i = 0; i < st->audio_v2_marker.size(); i++) {
+		const double x = st->audio_v2_corr_buffer[i];
+		const double ref = st->audio_v2_marker[i];
+		corr += x * ref;
+		energy += x * x;
+		ref_energy += ref * ref;
+	}
+
+	float score = 0.0f;
+	if (energy > 1e-9 && ref_energy > 1e-9)
+		score = (float)(fabs(corr) / sqrt(energy * ref_energy));
+
+	const uint64_t wait_ts = samples_to_ns(st->audio_v2_marker.size() / 2, st->audio_sample_rate);
+	if (st->audio_v2_marker_finder.append(score, ts, wait_ts) &&
+	    st->audio_v2_marker_finder.last_score >= V2_CORRELATION_THRESHOLD) {
+		const uint64_t peak_ts = st->audio_v2_marker_finder.last_ts;
+		if (!st->audio_v2_last_marker_ts ||
+		    peak_ts > st->audio_v2_last_marker_ts + (uint64_t)V2_DUPLICATE_WINDOW_MS * 1000000ULL) {
+			const uint64_t peak_sample = audio_v2_sample_from_ts(st, peak_ts);
+			const uint64_t marker_samples = st->audio_v2_marker.size();
+			const uint64_t marker_start =
+				peak_sample + 1 > marker_samples ? peak_sample + 1 - marker_samples : 0;
+			const uint32_t guard_samples = ms_to_samples(st->audio_sample_rate, V2_GUARD_MS);
+			const uint32_t symbol_samples = ms_to_samples(st->audio_sample_rate, V2_SYMBOL_MS);
+			const uint32_t symbol_stride = symbol_samples + guard_samples;
+			const uint32_t payload_search_samples =
+				ms_to_samples(st->audio_sample_rate, V2_PAYLOAD_SEARCH_MS);
+
+			struct st_audio_v2_candidate cand;
+			cand.marker_start_sample = marker_start;
+			cand.packet_end_sample = marker_start + marker_samples + guard_samples +
+						 (uint64_t)V2_PAYLOAD_SYMBOLS * symbol_stride + payload_search_samples;
+			cand.score = st->audio_v2_marker_finder.last_score;
+			st->audio_v2_candidates.push_back(cand);
+			st->audio_v2_last_marker_ts = peak_ts;
+		}
+	}
+
+	audio_v2_process_candidates(st);
 }
 
 static inline void st_raw_audio_decode_data(struct sync_test_output *st, std::complex<float> phase, uint64_t ts)
@@ -645,6 +1276,8 @@ static inline void st_raw_audio_decode_data(struct sync_test_output *st, std::co
 	data.index = index >> 4;
 	data.score = 0.0f;
 	data.index_max = identify_audio_index_max(st, index >> 4);
+	data.protocol = 1;
+	data.sequence = 0;
 
 	calldata_set_ptr(&cd, "data", &data);
 	signal_handler_signal(sh, "audio_marker_found", &cd);
@@ -693,6 +1326,15 @@ static void st_raw_audio(void *data, struct audio_data *frames)
 
 	if (!st->start_ts)
 		return;
+
+	if (st->detect_mode == SYNC_TEST_DETECT_AV_OFFSET) {
+		for (uint32_t i = 0; i < frames->frames; i++) {
+			uint64_t ts = frames->timestamp + util_mul_div64(i, 1000000000ULL, st->audio_sample_rate);
+			float v0 = ((float *)frames->data[0])[i];
+			float v1 = st->audio_channels >= 2 ? ((float *)frames->data[1])[i] : v0;
+			audio_v2_push_sample(st, (v0 + v1) * 0.5f, ts);
+		}
+	}
 
 	std::unique_lock<std::mutex> lock(st->mutex);
 	uint32_t f = st->f;

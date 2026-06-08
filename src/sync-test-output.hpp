@@ -1,16 +1,56 @@
 #pragma once
 
 #include <obs-module.h>
+#include <inttypes.h>
+#include <stdlib.h>
+
+#define SYNC_TEST_DETECT_LEGACY 0
+#define SYNC_TEST_DETECT_AV_OFFSET 1
+#define SYNC_TEST_NTP_EPOCH_S_MIN 1000000000ULL
+#define SYNC_TEST_NTP_EPOCH_MS_MIN 1000000000000ULL
 
 struct st_qr_data
 {
+	uint32_t protocol = 1;
 	uint32_t f = 0;
 	uint32_t c = 0;
 	uint32_t q_ms = 0;
 	uint32_t index = -1;
 	uint32_t index_max = 256;
 	uint32_t type_flags = 0;
+	uint64_t sequence = 0;
+	uint64_t ntp_ms = 0;
+	uint32_t mode = 0;
+	bool has_ntp_ms = false;
 	bool valid = 0;
+
+	void reset()
+	{
+		protocol = 1;
+		f = 0;
+		c = 0;
+		q_ms = 0;
+		index = -1;
+		index_max = 256;
+		type_flags = 0;
+		sequence = 0;
+		ntp_ms = 0;
+		mode = 0;
+		has_ntp_ms = false;
+		valid = false;
+	}
+
+	void set_ntp_time(uint64_t value)
+	{
+		if (value >= SYNC_TEST_NTP_EPOCH_MS_MIN) {
+			ntp_ms = value;
+			has_ntp_ms = true;
+		}
+		else if (value >= SYNC_TEST_NTP_EPOCH_S_MIN) {
+			ntp_ms = value * 1000ULL;
+			has_ntp_ms = true;
+		}
+	}
 
 	bool _decode_kv(char *param)
 	{
@@ -24,6 +64,9 @@ struct st_qr_data
 			return false;
 
 		switch (key[0]) {
+		case 'p':
+			protocol = (uint32_t)strtoul(val, nullptr, 10);
+			return true;
 		case 'f':
 			f = (uint32_t)atoi(val);
 			return true;
@@ -42,6 +85,17 @@ struct st_qr_data
 		case 't':
 			type_flags = (uint32_t)atoi(val);
 			return true;
+		case 's':
+			sequence = strtoull(val, nullptr, 10);
+			set_ntp_time(sequence);
+			return true;
+		case 'n':
+		case 'u':
+			set_ntp_time(strtoull(val, nullptr, 10));
+			return true;
+		case 'm':
+			mode = (uint32_t)strtoul(val, nullptr, 10);
+			return true;
 		default:
 			/* Ignored */
 			return true;
@@ -52,11 +106,27 @@ struct st_qr_data
 
 	bool check()
 	{
-		if (f < 10 || 32000 < f) {
+		if (protocol < 1 || protocol > 2) {
+			blog(LOG_WARNING, "p: out of range: %u", protocol);
+			return false;
+		}
+		if (protocol >= 2 && sequence == 0 && !has_ntp_ms) {
+			blog(LOG_WARNING, "s: missing or zero sequence");
+			return false;
+		}
+		if (protocol == 1 && (f < 10 || 32000 < f)) {
 			blog(LOG_WARNING, "f: out of range: %u", f);
 			return false;
 		}
-		if (c < 1 || f < c) {
+		if (protocol == 1 && (c < 1 || f < c)) {
+			blog(LOG_WARNING, "c: out of range: %u", c);
+			return false;
+		}
+		if (protocol >= 2 && f > 0 && 32000 < f) {
+			blog(LOG_WARNING, "f: out of range: %u", f);
+			return false;
+		}
+		if (protocol >= 2 && c > 0 && f > 0 && f < c) {
 			blog(LOG_WARNING, "c: out of range: %u", c);
 			return false;
 		}
@@ -73,7 +143,7 @@ struct st_qr_data
 
 	bool decode(char *payload)
 	{
-		valid = false;
+		reset();
 		char *saveptr;
 		char *param = strtok_r(payload, ",", &saveptr);
 		while (param) {
@@ -92,6 +162,12 @@ struct video_marker_found_s
 {
 	uint64_t timestamp;
 	float score;
+	uint32_t protocol;
+	uint64_t sequence;
+	bool has_glass_to_glass;
+	int64_t glass_to_glass_ns;
+	uint64_t source_epoch_ns;
+	uint64_t video_epoch_ns;
 	struct st_qr_data qr_data;
 };
 
@@ -101,6 +177,8 @@ struct audio_marker_found_s
 	int index;
 	float score;
 	uint32_t index_max;
+	uint32_t protocol;
+	uint64_t sequence;
 };
 
 struct sync_index
@@ -109,4 +187,12 @@ struct sync_index
 	uint64_t video_ts = 0;
 	uint64_t audio_ts = 0;
 	uint32_t index_max = 256;
+	uint32_t protocol = 1;
+	uint64_t sequence = 0;
+	float video_score = 0.0f;
+	float audio_score = 0.0f;
+	bool has_glass_to_glass = false;
+	int64_t glass_to_glass_ns = 0;
+	uint64_t source_epoch_ns = 0;
+	uint64_t video_epoch_ns = 0;
 };
