@@ -30,12 +30,31 @@ with a camera and microphone.
    | [av-offset-pattern-2400.mov](https://matiaspl.github.io/obs-audio-video-sync-dock/av-offset-pattern-2400.mov) | 24 FPS | 24 FPS or 48 FPS |
    | [av-offset-pattern-2398.mov](https://matiaspl.github.io/obs-audio-video-sync-dock/av-offset-pattern-2398.mov) | 23.98 FPS | 23.98 FPS (24 FPS NTSC) |
 
-   The generated MOV files use PCM s16 mono audio and inter-frame H.264 video
-   without B-frames.
+   The generated MOV files are the preferred reference assets. They use PCM s16
+   mono audio and intra-only H.264 video without B-frames, so the timing markers
+   are not shifted by AAC encoder priming or video frame reordering. MP4 files
+   with AAC audio are easier to play in some environments, but the lossy audio
+   path can add a fixed priming bias and normal H.264 GOPs can add reorder
+   latency; use those only when you intentionally want to measure that playback
+   or codec behavior.
 
 2. Play the generated clip on the device under test.
 3. Capture the device with the camera and microphone that OBS will use.
 4. Open the Audio Video Sync dock, select `AV Offset Clip`, and start measuring.
+
+Version 2 was created for offset checks where the original sync-pattern
+workflow was too fragile and visually aggressive: the legacy clip uses
+high-contrast full-frame quadrant flashes that can be uncomfortable or
+unsuitable for photosensitive viewers, plus a tone-coded audio marker whose
+timing is tied to frame-sized pulses. Display cadence, camera exposure, encoder
+reordering, lossy audio priming, or a missed marker can therefore bias the
+result. The v2 AV offset clip separates timing from identity: low-flash sparse
+checkerboard transitions provide a cleaner video instant, the centered
+chirp/tick provides a sample-level audio fiducial, and the DTMF/CRC payload lets
+the analyzer pair the correct audio and video events. This makes repeated
+measurements less visually intrusive, easier to capture, and better suited to
+validating relative AV offset through real cameras, microphones, media sources,
+and recordings.
 
 The v2 clip uses sparse checkerboard events for video timing and far-field
 acoustic packets for audio timing and identity. The exact audio event is the
@@ -43,6 +62,25 @@ center of the packet's short tick inside the centered matched-filter marker.
 DTMF uses the standard 4x3 keypad frequencies, an 8-bit event code, CRC8, and
 60 ms symbol guards for identity. The measurement is relative AV offset only;
 it does not claim true source-to-capture transmission latency.
+
+The audio packet is designed to be more tolerant of echo and reverberation than
+a single short tone burst. The timing fiducial is an 80 ms up/down chirp with a
+short Ricker/Mexican-hat-style tick at the center, and the analyzer finds it by
+matched-filter correlation; this is the same general signal-processing family
+used for delay estimation of known waveforms in noisy and multipath channels.
+The DTMF section is deliberately after the timing marker and guard interval, so
+it identifies the event without defining the event time. DTMF also uses the
+well-established two-frequency voice-band code standardized for push-button
+signalling by ITU-T Q.23/Q.24, where receiver design explicitly considers
+speech simulation, echoes, and noise immunity. This should be read as a
+robustness design, not a guarantee: strong unresolved early reflections can
+still bias any acoustic time-of-arrival measurement, so difficult rooms should
+be validated with repeat runs and microphone placement changes.
+
+Related background: [matched-filter delay estimation](https://arxiv.org/abs/1101.2713),
+[multipath delay-estimation bias](https://arxiv.org/abs/2012.05790),
+[ITU-T Q.23](https://www.itu.int/rec/T-REC-Q.23/en), and
+[ITU-T Q.24](https://www.itu.int/rec/T-REC-Q.24/en).
 
 To verify the reference file itself without OBS media-source scheduling in the
 path, run:
@@ -54,6 +92,21 @@ path, run:
 When validating OBS behavior, compare the dock result against an actual OBS
 recording made with the same source sync offsets, encoder, frame rate, and audio
 buffering settings.
+
+### Web generator workflow
+
+For live source-to-capture tests, open the hosted NTP Cue Generator:
+
+<https://broadcast-ready.com/obs-audio-video-sync-dock/>
+
+The web generator renders the same v2 visual marker sequence in the browser and
+schedules matching acoustic packets against a shared wall-clock target time. Its
+QR payload includes the target UTC timestamp, so the dock can compare that
+source time with the OBS capture timestamp and report `Glass-to-glass` latency.
+Use this workflow when you need the full display-to-camera path latency, such as
+browser rendering, display scanout, camera exposure, capture transport, and OBS
+ingest. Use the MOV clip workflow when you only need relative audio/video offset
+inside a repeatable file-based test.
 
 ### Legacy workflow
 
