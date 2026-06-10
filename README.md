@@ -90,7 +90,7 @@ buffering settings.
 
 For live source-to-capture latency tests, open the web-based NTP Cue Generator:
 
-<[https://broadcast-ready.com/obs-audio-video-sync-dock/](https://matiaspl.github.io/obs-audio-video-sync-dock/)>
+<[https://matiaspl.github.io/obs-audio-video-sync-dock/](https://matiaspl.github.io/obs-audio-video-sync-dock/)>
 
 The web generator renders the same v2 visual marker sequence in the browser and
 schedules matching acoustic packets against a shared wall-clock target time. Its
