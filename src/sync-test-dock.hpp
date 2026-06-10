@@ -16,6 +16,7 @@ public:
 
 private:
 	QPushButton *startButton = nullptr;
+	QPushButton *resetButton = nullptr;
 	QComboBox *modeSelector = nullptr;
 
 	QLabel *latencyLabel = nullptr;
@@ -40,10 +41,13 @@ private:
 	int received_video_index_max = 0;
 	int received_audio_index_max = 0;
 	int audio_index_max = 0;
+	int active_detect_mode = SYNC_TEST_DETECT_AV_OFFSET;
 	std::deque<int64_t> av_offset_samples;
 
 private:
 	void on_start_stop();
+	void on_reset();
+	void reset_analysis_stats(int detect_mode);
 
 	void on_video_marker_found(video_marker_found_s data);
 	void on_audio_marker_found(audio_marker_found_s data);

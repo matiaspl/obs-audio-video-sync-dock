@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(obs-audio-video-sync-dock VERSION 2.0.0)
+project(obs-audio-video-sync-dock VERSION 2.0.1)
 
 set(PLUGIN_AUTHOR "Norihiro Kamae")
 

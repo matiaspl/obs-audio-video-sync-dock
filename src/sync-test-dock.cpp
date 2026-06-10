@@ -42,9 +42,17 @@ SyncTestDock::SyncTestDock(QWidget *parent) : QFrame(parent)
 
 	int y = 0;
 
+	QHBoxLayout *buttonLayout = new QHBoxLayout();
+
 	startButton = new QPushButton(obs_module_text("Button.Start"), this);
-	mainLayout->addWidget(startButton);
+	buttonLayout->addWidget(startButton);
 	connect(startButton, &QPushButton::clicked, this, &SyncTestDock::on_start_stop);
+
+	resetButton = new QPushButton(obs_module_text("Button.Reset"), this);
+	buttonLayout->addWidget(resetButton);
+	connect(resetButton, &QPushButton::clicked, this, &SyncTestDock::on_reset);
+
+	mainLayout->addLayout(buttonLayout);
 
 	QLabel *label;
 	label = new QLabel(obs_module_text("Label.Mode"), this);
@@ -106,6 +114,7 @@ SyncTestDock::SyncTestDock(QWidget *parent) : QFrame(parent)
 
 	mainLayout->addLayout(topLayout);
 	setLayout(mainLayout);
+	reset_analysis_stats(active_detect_mode);
 }
 
 SyncTestDock::~SyncTestDock()
@@ -162,6 +171,7 @@ void SyncTestDock::on_start_stop()
 	if (!sync_test) /* request to start */ {
 		OBSDataAutoRelease settings = obs_data_create();
 		const int detect_mode = modeSelector ? modeSelector->currentData().toInt() : SYNC_TEST_DETECT_AV_OFFSET;
+		active_detect_mode = detect_mode;
 		obs_data_set_int(settings, "detect_mode", detect_mode);
 		OBSOutputAutoRelease o = obs_output_create(OUTPUT_ID, "sync-test-output", settings, nullptr);
 		if (!o) {
@@ -169,18 +179,7 @@ void SyncTestDock::on_start_stop()
 			return;
 		}
 
-		last_video_ix = last_audio_ix = -1;
-		missed_video_ix = missed_audio_ix = 0;
-		received_video_ix = received_audio_ix = 0;
-		received_video_index_max = 256;
-		received_audio_index_max = 256;
-		audio_index_max = 256;
-		av_offset_samples.clear();
-		if (latencyLabel)
-			latencyLabel->setText(obs_module_text(
-				detect_mode == SYNC_TEST_DETECT_AV_OFFSET ? "Label.AVOffset" : "Label.Latency"));
-		if (glassToGlassDisplay)
-			glassToGlassDisplay->setText(QStringLiteral("-"));
+		reset_analysis_stats(detect_mode);
 
 		auto *sh = obs_output_get_signal_handler(o);
 		signal_handler_connect(sh, "video_marker_found", cb_video_marker_found, this);
@@ -204,6 +203,42 @@ void SyncTestDock::on_start_stop()
 		if (startButton)
 			startButton->setText(obs_module_text("Button.Start"));
 	}
+}
+
+void SyncTestDock::on_reset()
+{
+	const int detect_mode = sync_test ? active_detect_mode
+					  : (modeSelector ? modeSelector->currentData().toInt() : SYNC_TEST_DETECT_AV_OFFSET);
+	reset_analysis_stats(detect_mode);
+}
+
+void SyncTestDock::reset_analysis_stats(int detect_mode)
+{
+	last_video_ix = last_audio_ix = -1;
+	missed_video_ix = missed_audio_ix = 0;
+	received_video_ix = received_audio_ix = 0;
+	received_video_index_max = 256;
+	received_audio_index_max = 256;
+	audio_index_max = 256;
+	av_offset_samples.clear();
+
+	if (latencyLabel)
+		latencyLabel->setText(
+			obs_module_text(detect_mode == SYNC_TEST_DETECT_AV_OFFSET ? "Label.AVOffset" : "Label.Latency"));
+	if (latencyDisplay)
+		latencyDisplay->setText(QStringLiteral("-"));
+	if (latencyPolarity)
+		latencyPolarity->setText(QStringLiteral("-"));
+	if (glassToGlassDisplay)
+		glassToGlassDisplay->setText(QStringLiteral("-"));
+	if (indexDisplay)
+		indexDisplay->setText(QStringLiteral("-"));
+	if (frequencyDisplay)
+		frequencyDisplay->setText(QStringLiteral("-"));
+	if (videoIndexDisplay)
+		videoIndexDisplay->setText(QStringLiteral("-"));
+	if (audioIndexDisplay)
+		audioIndexDisplay->setText(QStringLiteral("-"));
 }
 
 static int missed_markers(int index, int last_index, int max_index)
