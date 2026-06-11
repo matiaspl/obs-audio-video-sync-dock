@@ -415,6 +415,10 @@
 			clockLabel: "local",
 			lastRttMs: 0,
 			lastFrameMs: 0,
+			lastBadgeUpdateMs: 0,
+			lastStatusUpdateMs: 0,
+			audioLatencySamples: [],
+			displayAudioLatencySeconds: 0,
 			audioTimingLabel: "-",
 			lastAudioSchedule: "-",
 			audioProbeLabel: "pending",
@@ -422,6 +426,7 @@
 			autoSync: true,
 			autoStart: true,
 			autoStartAttempted: false,
+			scopeMode: "auto",
 			leadMs: 2200,
 			visualMs: 220,
 		};
@@ -455,6 +460,24 @@
 		function readNumber(input, fallback) {
 			const value = Number(input.value);
 			return Number.isFinite(value) ? value : fallback;
+		}
+
+		function isMobileRuntime() {
+			return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+				window.matchMedia("(pointer: coarse) and (max-width: 860px)").matches;
+		}
+
+		function canvasDpr() {
+			const dpr = Math.max(1, window.devicePixelRatio || 1);
+			return Math.min(isMobileRuntime() ? 1.75 : 3, dpr);
+		}
+
+		function shouldDrawSyncProgress() {
+			if (state.scopeMode === "on")
+				return true;
+			if (state.scopeMode === "off")
+				return false;
+			return !isMobileRuntime();
 		}
 
 		function crc8(value) {
@@ -557,7 +580,7 @@
 			state.offsetSamples = [];
 			state.clockLabel = "local";
 			state.lastRttMs = 0;
-			updateStatus();
+			updateStatusThrottled();
 		}
 
 		function updateTimeSourceControls() {
@@ -845,6 +868,30 @@
 			return (audio.baseLatency || 0) + (audio.outputLatency || 0);
 		}
 
+		function stableAudioOutputLatencySeconds() {
+			const latency = audioOutputLatencySeconds();
+			if (!Number.isFinite(latency) || latency <= 0)
+				return latency;
+
+			state.audioLatencySamples.push(latency);
+			if (state.audioLatencySamples.length > 21)
+				state.audioLatencySamples.shift();
+
+			const samples = state.audioLatencySamples.slice().sort((a, b) => a - b);
+			const median = samples[Math.floor(samples.length * 0.5)];
+			if (!state.displayAudioLatencySeconds || Math.abs(median - state.displayAudioLatencySeconds) > 0.05)
+				state.displayAudioLatencySeconds = median;
+			return state.displayAudioLatencySeconds;
+		}
+
+		function fmtLead(ms) {
+			if (!Number.isFinite(ms))
+				return "-";
+			if (Math.abs(ms) >= 1000)
+				return `${(ms / 1000).toFixed(1)} s`;
+			return `${Math.round(ms)} ms`;
+		}
+
 		function validOutputTimestamp(timestamp, audio) {
 			if (!timestamp || !Number.isFinite(timestamp.contextTime) || !Number.isFinite(timestamp.performanceTime))
 				return false;
@@ -965,6 +1012,28 @@
 			state.audioSchedulerNode.disconnect();
 			state.audioSchedulerNode.onaudioprocess = null;
 			state.audioSchedulerNode = null;
+		}
+
+		function stopScheduledAudioNodes() {
+			for (const node of state.activeAudioNodes) {
+				if (node === state.audioHoldSource)
+					continue;
+				try {
+					node.stop();
+				}
+				catch {
+					/* The node may already be stopped. */
+				}
+				try {
+					node.disconnect();
+				}
+				catch {
+					/* The node may already be disconnected. */
+				}
+			}
+			state.activeAudioNodes.clear();
+			if (state.audioHoldSource)
+				state.activeAudioNodes.add(state.audioHoldSource);
 		}
 
 		async function resumeAudioContext() {
@@ -1251,8 +1320,6 @@
 		function scheduleAudioCue(targetMs, sequence) {
 			if (!el.audioEnabled.checked || !state.audioContext)
 				return false;
-			if (!state.audioSchedulerNode)
-				startContinuousAudioScheduler();
 
 			const schedule = audioScheduleForRemoteMs(targetMs - AUDIO_PREROLL_MS - MARKER_MS * 0.5);
 			const when = schedule.when;
@@ -1260,15 +1327,13 @@
 				return false;
 
 			const buffer = makePacketBuffer(sequence);
-			state.audioCueQueue.push({
-				sequence,
-				startFrame: Math.round(when * buffer.sampleRate),
-				length: buffer.length,
-				left: buffer.getChannelData(0),
-				right: buffer.getChannelData(1),
-			});
+			const source = state.audioContext.createBufferSource();
+			source.buffer = buffer;
+			source.connect(state.masterGain);
+			retainAudioNode(source);
+			source.start(when);
 			state.audioTimingLabel = schedule.mode;
-			state.lastAudioSchedule = `${schedule.mode} seq=${sequence & 0xff} in=${((when - state.audioContext.currentTime) * 1000).toFixed(1)} ms`;
+			state.lastAudioSchedule = `${schedule.mode} seq=${sequence & 0xff} lead=${fmtLead(targetMs - remoteNowMs())}`;
 			log(`audio ${state.lastAudioSchedule}`);
 			return true;
 		}
@@ -1864,7 +1929,7 @@
 		function drawStage() {
 			const canvas = el.canvas;
 			const ctx = canvas.getContext("2d");
-			const dpr = Math.max(1, Math.min(3, window.devicePixelRatio || 1));
+			const dpr = canvasDpr();
 			const rect = canvas.getBoundingClientRect();
 			const w = Math.max(1, Math.round(rect.width * dpr));
 			const h = Math.max(1, Math.round(rect.height * dpr));
@@ -1907,12 +1972,16 @@
 				drawNeutralFrame(ctx);
 			}
 
-			drawSyncProgress(ctx, square, progressEvent, now, dpr);
+			if (shouldDrawSyncProgress())
+				drawSyncProgress(ctx, square, progressEvent, now, dpr);
 			updateBadges(next, now);
 			requestAnimationFrame(drawStage);
 		}
 
 		function updateBadges(next, now) {
+			if (state.running || performance.now() - state.lastBadgeUpdateMs < 250)
+				return;
+			state.lastBadgeUpdateMs = performance.now();
 			el.clockBadge.textContent = state.clockLabel;
 			el.nextBadge.textContent = next && Number.isFinite(next.targetMs) ? `${(next.targetMs - now).toFixed(0)} ms` : "-";
 			el.seqBadge.textContent = next ? `${next.sequence & 0xff}` : "-";
@@ -1920,6 +1989,7 @@
 		}
 
 		function updateStatus() {
+			state.lastStatusUpdateMs = performance.now();
 			el.clockSource.textContent = state.clockLabel;
 			el.clockSource.className = state.clockLabel === "local" ? "warn" : "ok";
 			el.clockOffset.textContent = fmtMs(state.offsetMs);
@@ -1942,7 +2012,7 @@
 			}
 
 			if (state.audioContext) {
-				el.audioLatency.textContent = `${fmtMs(audioOutputLatencySeconds() * 1000, 2)}`;
+				el.audioLatency.textContent = `${fmtMs(stableAudioOutputLatencySeconds() * 1000, 2)}`;
 				el.audioTiming.textContent = state.audioTimingLabel;
 				el.audioTiming.className = state.audioTimingLabel === "output timestamp" ? "ok" : "warn";
 				el.audioState.textContent = `${state.audioContext.state} ${state.lastAudioSchedule}`;
@@ -1955,6 +2025,12 @@
 				el.audioState.textContent = "-";
 				el.audioState.className = "";
 			}
+		}
+
+		function updateStatusThrottled(intervalMs = 250) {
+			if (performance.now() - state.lastStatusUpdateMs < intervalMs)
+				return;
+			updateStatus();
 		}
 
 		async function start() {
@@ -1999,11 +2075,11 @@
 			state.nextTargetMs = 0;
 			state.lastScheduledTargetMs = 0;
 			state.audioPrimedAfterCue = false;
+			state.audioLatencySamples = [];
+			state.displayAudioLatencySeconds = 0;
 			state.audioTimingLabel = "-";
 			state.runOffsetMs = state.offsetMs;
 			state.scheduled.clear();
-			if (el.audioEnabled.checked)
-				startContinuousAudioScheduler();
 			updateStatus();
 			updateRunClass();
 			updateFullscreenClass();
@@ -2025,9 +2101,12 @@
 			state.schedulerTimer = 0;
 			state.syncTimer = 0;
 			state.audioPrimedAfterCue = false;
+			state.audioLatencySamples = [];
+			state.displayAudioLatencySeconds = 0;
 			state.audioTimingLabel = "-";
 			state.lastAudioSchedule = "-";
 			state.scheduled.clear();
+			stopScheduledAudioNodes();
 			stopContinuousAudioScheduler();
 			stopStartupAudioHold();
 			el.startBtn.textContent = "Start";
@@ -2081,6 +2160,10 @@
 				state.autoStart = false;
 			if (params.get("autostart") === "1")
 				state.autoStart = true;
+			if (params.get("scope") === "0")
+				state.scopeMode = "off";
+			if (params.get("scope") === "1")
+				state.scopeMode = "on";
 			applyStaticHostDefaults();
 			updateTimeSourceControls();
 		}
